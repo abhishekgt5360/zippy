@@ -16,3 +16,8 @@
 local.properties
 .env
 debug.keystore
+*.apk
+*.aab
+*.jks
+*.keystore
+google-services.json
