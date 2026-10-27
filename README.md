@@ -51,6 +51,20 @@ The client connects to the high-speed **CinePulse Cloud Network** (`movieapi.zar
 
 ---
 
+## 📱 Screenshots
+
+<div align="center">
+
+| Home — Crimson | Home — Lupin |
+|:---:|:---:|
+| <img src="docs/screenshots/home-the-terminal-list.png" width="260" alt="Zippy home screen with The Terminal List S2 hero" /> | <img src="docs/screenshots/home-lupin.png" width="260" alt="Zippy home screen with Lupin hero" /> |
+
+*The Paper light theme is available under Settings → Choose theme.*
+
+</div>
+
+---
+
 ## 🎨 Liquid-Glass Design System
 
 Unlike conventional blur implementations that degrade performance on older Mali and Adreno GPUs, Zippy uses a calibrated multi-layer composite system:
@@ -128,6 +142,7 @@ zippy/
 │   │   └── util/                         # Download helper, SecureVault, device utils
 │   ├── build.gradle.kts                  # App dependencies & signing config
 │   └── proguard-rules.pro                # Code & resource shrinking
+├── docs/                                 # Screenshots & wordmark assets
 ├── gradle/                               # Version catalogs & wrapper
 ├── release/
 │   └── README.md                         # Release notes
