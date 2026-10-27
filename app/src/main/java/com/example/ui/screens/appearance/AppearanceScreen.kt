@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -16,6 +17,7 @@ import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -24,10 +26,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.ui.theme.HighContrastScheme
@@ -37,6 +43,9 @@ import com.example.ui.theme.ThemeMode
 import com.example.util.DevCreditManager
 import com.example.util.ResumeNoticePosition
 import com.example.util.ResumeNoticePreferences
+import kotlinx.coroutines.delay
+
+private const val ADULT_UNLOCK_PIN = "1027"
 
 fun ThemeMode.getDisplayName(): String = when (this) {
     ThemeMode.CRIMSON -> "Crimson"
@@ -57,6 +66,9 @@ fun AppearanceScreen(
     onOpenDevCredit: () -> Unit = {}
 ) {
     var showAdultConfirmDialog by remember { mutableStateOf(false) }
+    var adultPin by remember { mutableStateOf("") }
+    var adultPinError by remember { mutableStateOf(false) }
+    val adultPinFocusRequester = remember { FocusRequester() }
     var expandedThemeDropdown by remember { mutableStateOf(false) }
     val isDynamicSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
     val context = LocalContext.current
@@ -194,6 +206,8 @@ fun AppearanceScreen(
                         checked = isAdultEnabled,
                         onCheckedChange = { checked ->
                             if (checked) {
+                                adultPin = ""
+                                adultPinError = false
                                 showAdultConfirmDialog = true
                             } else {
                                 onAdultToggle(false)
@@ -403,38 +417,80 @@ fun AppearanceScreen(
     }
 
     if (showAdultConfirmDialog) {
+        LaunchedEffect(Unit) {
+            delay(150)
+            adultPinFocusRequester.requestFocus()
+        }
         AlertDialog(
-            onDismissRequest = { showAdultConfirmDialog = false },
+            onDismissRequest = {
+                showAdultConfirmDialog = false
+                adultPin = ""
+                adultPinError = false
+            },
             title = {
                 Text(
-                    text = "Adult Content Confirmation",
+                    text = "Enter PIN",
                     color = MaterialTheme.colorScheme.onSurface,
                     fontWeight = FontWeight.Bold
                 )
             },
             text = {
-                Text(
-                    text = "This shows content for adults only. Confirm that you are 18 or older.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "18+ content is locked. Enter the 4-digit PIN to enable it.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = adultPin,
+                        onValueChange = { input ->
+                            adultPin = input.filter(Char::isDigit).take(4)
+                            if (adultPinError) adultPinError = false
+                        },
+                        label = { Text("PIN") },
+                        singleLine = true,
+                        isError = adultPinError,
+                        supportingText = if (adultPinError) {
+                            { Text("Incorrect PIN. Try again.") }
+                        } else {
+                            null
+                        },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .focusRequester(adultPinFocusRequester)
+                            .testTag("adult_pin_field")
+                    )
+                }
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        showAdultConfirmDialog = false
-                        onAdultToggle(true)
+                        if (adultPin == ADULT_UNLOCK_PIN) {
+                            showAdultConfirmDialog = false
+                            adultPin = ""
+                            adultPinError = false
+                            onAdultToggle(true)
+                        } else {
+                            adultPinError = true
+                        }
                     },
+                    enabled = adultPin.length == 4,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.primary,
                         contentColor = MaterialTheme.colorScheme.onPrimary
                     )
                 ) {
-                    Text("I am 18+", fontWeight = FontWeight.Bold)
+                    Text("Unlock", fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
                 OutlinedButton(
-                    onClick = { showAdultConfirmDialog = false }
+                    onClick = {
+                        showAdultConfirmDialog = false
+                        adultPin = ""
+                        adultPinError = false
+                    }
                 ) {
                     Text("Cancel")
                 }

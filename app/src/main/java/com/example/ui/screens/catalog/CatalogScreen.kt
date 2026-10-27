@@ -66,6 +66,7 @@ fun CatalogScreen(
     onPresetSelected: (String) -> Unit,
     onYearSelected: (String?) -> Unit,
     onGenreSelected: (String) -> Unit,
+    onAdultsOnlyChanged: (Boolean) -> Unit,
     onSortSelected: (String) -> Unit,
     onMovieClick: (MovieItem) -> Unit,
     onLoadMore: () -> Unit,
@@ -81,7 +82,6 @@ fun CatalogScreen(
 
     val selectedPreset = RegionalCategoryConfig.presetById(uiState.selectedPresetId)
     val isAnimation = uiState.type == CatalogType.ANIMATION
-    val isAdultPreset = selectedPreset.id == RegionalCategoryConfig.PRESET_ADULT
     val isHighContrast = LocalHighContrast.current
 
     fun applyFilter(block: () -> Unit) {
@@ -99,6 +99,13 @@ fun CatalogScreen(
                 }
             )
         }
+        if (uiState.adultsOnly) {
+            add(
+                ActiveFilterChip(key = "adult", label = "Adult 18+") {
+                    applyFilter { onAdultsOnlyChanged(false) }
+                }
+            )
+        }
         if (!isAnimation && uiState.selectedYear != null) {
             add(
                 ActiveFilterChip(key = "year", label = uiState.selectedYear) {
@@ -106,7 +113,7 @@ fun CatalogScreen(
                 }
             )
         }
-        if (selectedPreset.genre == null && uiState.selectedGenre != "All") {
+        if (!uiState.adultsOnly && selectedPreset.genre == null && uiState.selectedGenre != "All") {
             add(
                 ActiveFilterChip(key = "genre", label = uiState.selectedGenre) {
                     applyFilter { onGenreSelected("All") }
@@ -366,23 +373,46 @@ fun CatalogScreen(
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Text(
-                            text = "Nothing Found",
+                            text = if (uiState.adultsOnly) "No Adult Titles" else "Nothing Found",
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                         )
                         Spacer(modifier = Modifier.height(8.dp))
+                        val adultSortMismatch =
+                            uiState.adultsOnly && uiState.selectedSort != "foryou"
                         Text(
-                            text = "Nothing found for this filter.",
+                            text = when {
+                                adultSortMismatch ->
+                                    "No adult titles for \"$sortLabel\" sorting. Adult titles only appear under For You."
+                                uiState.adultsOnly ->
+                                    "No adult titles match this country or year. Try another country or year."
+                                else -> "Nothing found for this filter."
+                            },
                             style = MaterialTheme.typography.bodySmall.copy(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             ),
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center
                         )
                         Spacer(modifier = Modifier.height(16.dp))
-                        OutlinedButton(onClick = onResetFilters) {
-                            Text("Reset Filters", fontWeight = FontWeight.Bold)
+                        if (adultSortMismatch) {
+                            Button(
+                                onClick = { applyFilter { onSortSelected("foryou") } },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.primary,
+                                    contentColor = MaterialTheme.colorScheme.onPrimary
+                                )
+                            ) {
+                                Text("Switch to For You", fontWeight = FontWeight.Bold)
+                            }
+                            TextButton(onClick = onResetFilters) {
+                                Text("Reset Filters")
+                            }
+                        } else {
+                            OutlinedButton(onClick = onResetFilters) {
+                                Text("Reset Filters", fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
                 }
@@ -482,26 +512,25 @@ fun CatalogScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
-                FilterSection(title = "Sort") {
-                    FilterChipRow {
-                        SORTS.forEach { (sortKey, label) ->
-                            GlassChip(
-                                label = label,
-                                selected = uiState.selectedSort == sortKey,
-                                onClick = { applyFilter { onSortSelected(sortKey) } }
-                            )
-                        }
+                if (uiState.adultsOnly) {
+                    FilterSection(
+                        title = "Sort",
+                        description = "Adult titles only return results with For You ordering."
+                    ) {
+                        GlassChip(
+                            label = "For You",
+                            selected = true,
+                            onClick = { applyFilter { onSortSelected("foryou") } }
+                        )
                     }
-                }
-
-                if (!isAdultPreset) {
-                    FilterSection(title = "Genre") {
+                } else {
+                    FilterSection(title = "Sort") {
                         FilterChipRow {
-                            GENRES.forEach { genre ->
+                            SORTS.forEach { (sortKey, label) ->
                                 GlassChip(
-                                    label = genre,
-                                    selected = uiState.selectedGenre == genre,
-                                    onClick = { applyFilter { onGenreSelected(genre) } }
+                                    label = label,
+                                    selected = uiState.selectedSort == sortKey,
+                                    onClick = { applyFilter { onSortSelected(sortKey) } }
                                 )
                             }
                         }
@@ -516,9 +545,34 @@ fun CatalogScreen(
                         modifier = Modifier.padding(top = 20.dp)
                     )
                 } else {
+                    if (isAdultEnabled) {
+                        FilterSection(
+                            title = "Adult (18+)",
+                            description = "Only titles tagged Adult. Country and year still apply; sort is fixed to For You."
+                        ) {
+                            GlassChip(
+                                label = "Adult only",
+                                selected = uiState.adultsOnly,
+                                onClick = { applyFilter { onAdultsOnlyChanged(!uiState.adultsOnly) } }
+                            )
+                            if (uiState.adultsOnly) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = "Adult is on. Pick a country below to narrow the list.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                    }
+
                     FilterSection(
                         title = "Country / Region",
-                        description = "Country of production. Not a language filter."
+                        description = if (uiState.adultsOnly) {
+                            "Country of production. Adult titles can be narrowed by country here."
+                        } else {
+                            "Country of production. Not a language filter."
+                        }
                     ) {
                         FilterChipRow {
                             RegionalCategoryConfig.REGION_PRESETS.forEach { preset ->
@@ -526,8 +580,7 @@ fun CatalogScreen(
                                     label = preset.label,
                                     selected = selectedPreset.id == preset.id,
                                     onClick = {
-                                        // Picking a region always leaves the Adult preset, since
-                                        // Adult is intentionally not part of this group.
+                                        // Changing country keeps the Adult lens active.
                                         applyFilter { onPresetSelected(preset.id) }
                                     }
                                 )
@@ -535,27 +588,17 @@ fun CatalogScreen(
                         }
                     }
 
-                    if (isAdultEnabled) {
-                        HorizontalDivider(
-                            modifier = Modifier.padding(top = 20.dp),
-                            color = MaterialTheme.colorScheme.outlineVariant
-                        )
-                        FilterSection(
-                            title = "Adult (18+)",
-                            description = "Shown because Adult content is enabled in Settings."
-                        ) {
-                            GlassChip(
-                                label = RegionalCategoryConfig.ADULT_PRESET.label,
-                                selected = isAdultPreset,
-                                onClick = {
-                                    val target = if (isAdultPreset) {
-                                        RegionalCategoryConfig.PRESET_ALL
-                                    } else {
-                                        RegionalCategoryConfig.ADULT_PRESET.id
-                                    }
-                                    applyFilter { onPresetSelected(target) }
+                    if (!uiState.adultsOnly) {
+                        FilterSection(title = "Genre") {
+                            FilterChipRow {
+                                GENRES.forEach { genre ->
+                                    GlassChip(
+                                        label = genre,
+                                        selected = uiState.selectedGenre == genre,
+                                        onClick = { applyFilter { onGenreSelected(genre) } }
+                                    )
                                 }
-                            )
+                            }
                         }
                     }
 

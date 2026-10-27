@@ -7,8 +7,7 @@ data class CatalogPreset(
     val country: String? = null,
     val countries: List<String> = emptyList(),
     val genre: String? = null,
-    val language: String? = null,
-    val requiresAdultOptIn: Boolean = false
+    val language: String? = null
 )
 
 object RegionalCategoryConfig {
@@ -18,7 +17,9 @@ object RegionalCategoryConfig {
     const val PRESET_ALL = "all"
     const val PRESET_INDIA = "india"
     const val PRESET_US_UK_CA_AU = "us_uk_ca_au"
-    const val PRESET_ADULT = "adult"
+
+    /** Genre token the API uses for 18+ titles. Applied as a lens, not a preset. */
+    const val ADULT_GENRE = "Adult"
 
     val PRESETS = listOf(
         CatalogPreset(
@@ -37,20 +38,11 @@ object RegionalCategoryConfig {
             label = "US, UK, CA, AU",
             description = "Titles from these countries. This is not a language filter.",
             countries = listOf("United States", "United Kingdom", "Canada", "Australia")
-        ),
-        CatalogPreset(
-            id = PRESET_ADULT,
-            label = "Adult",
-            description = "Titles tagged Adult. Enable Adult content in Settings first.",
-            genre = "Adult",
-            requiresAdultOptIn = true
         )
     )
 
-    /** Country/region presets. Adult is intentionally not part of this group. */
-    val REGION_PRESETS: List<CatalogPreset> = PRESETS.filter { !it.requiresAdultOptIn }
-
-    val ADULT_PRESET: CatalogPreset = PRESETS.first { it.id == PRESET_ADULT }
+    /** Country/region presets. Adult is a separate lens and can be combined with these. */
+    val REGION_PRESETS: List<CatalogPreset> = PRESETS
 
     fun presetById(id: String?): CatalogPreset =
         PRESETS.firstOrNull { it.id == id } ?: PRESETS.first()

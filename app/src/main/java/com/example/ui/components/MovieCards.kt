@@ -101,9 +101,11 @@ fun MoviePosterCard(
             )
 
             // Rating badge — top right
-            if (!movie.rating.isNullOrBlank()) {
-                PosterBadge(
-                    text = "★ ${movie.rating}",
+            val rating = movie.rating
+            if (!rating.isNullOrBlank()) {
+                RatingBadge(
+                    rating = rating,
+                    onArtwork = true,
                     modifier = Modifier
                         .padding(7.dp)
                         .align(Alignment.TopEnd)

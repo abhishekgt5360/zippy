@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -32,6 +33,7 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import coil.size.Scale
 import com.example.ui.theme.LocalHighContrast
+import com.example.ui.theme.calculateContrastRatio
 import com.example.ui.theme.selectableColors
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -488,28 +490,81 @@ fun PosterImage(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PosterBadge -> Badge ON TOP of artwork/poster images
+// ThemedPosterBadge -> Shared pill shell for every poster overlay badge
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Badges are drawn over arbitrary poster artwork, not over a themed surface,
-// so they use a fixed dark scrim with white text in every theme. This is the
-// one place where fixed colors are correct. White on 75% black is about 10:1
-// even over a pure-white poster.
+// Badges are drawn over arbitrary poster artwork, so the pill is filled with
+// the active theme surface (near-opaque over artwork) instead of leaning on the
+// image behind it. Labels and icons then use the theme accent. If a palette's
+// primary is too close to that surface (possible with dynamic palettes), the
+// accent falls back through onSurface/onSurfaceVariant, which stay legible
+// against their own surface pair by construction.
 @Composable
-fun PosterBadge(text: String, modifier: Modifier = Modifier) {
+private fun ThemedPosterBadge(
+    onArtwork: Boolean,
+    modifier: Modifier = Modifier,
+    content: @Composable RowScope.(accent: Color) -> Unit
+) {
+    val colors = MaterialTheme.colorScheme
+    val isHighContrast = LocalHighContrast.current
+    val surfaceBase = if (onArtwork) colors.surface else colors.surfaceContainerHigh
+    val container = if (onArtwork) surfaceBase.copy(alpha = 0.94f) else surfaceBase
+    val accent = listOf(colors.primary, colors.onSurface, colors.onSurfaceVariant)
+        .firstOrNull { calculateContrastRatio(it, surfaceBase) >= 4.5 }
+        ?: colors.onSurface
     val shape = RoundedCornerShape(999.dp)
-    val highContrast = LocalHighContrast.current
-    Box(
-        contentAlignment = Alignment.Center,
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
         modifier = modifier
             .clip(shape)
-            .background(Color.Black.copy(alpha = 0.75f), shape) // legibility-ok: poster badge
-            .then(if (highContrast) Modifier.border(1.dp, Color.White, shape) else Modifier) // legibility-ok: poster badge
-            .padding(horizontal = 9.dp, vertical = 4.dp)
+            .background(container, shape)
+            .then(if (isHighContrast) Modifier.border(1.dp, colors.onSurface, shape) else Modifier)
+            .padding(horizontal = 8.dp, vertical = 4.dp)
     ) {
+        content(accent)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PosterBadge -> Type / language badge ON TOP of artwork
+// ─────────────────────────────────────────────────────────────────────────────
+
+@Composable
+fun PosterBadge(text: String, modifier: Modifier = Modifier) {
+    ThemedPosterBadge(onArtwork = true, modifier = modifier) { accent ->
         Text(
             text = text,
-            color = Color.White, // legibility-ok: poster badge
+            color = accent,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            softWrap = false
+        )
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RatingBadge -> Star rating, same theme-aware shell as PosterBadge
+// ─────────────────────────────────────────────────────────────────────────────
+
+@Composable
+fun RatingBadge(
+    rating: String,
+    modifier: Modifier = Modifier,
+    onArtwork: Boolean = false
+) {
+    ThemedPosterBadge(onArtwork = onArtwork, modifier = modifier) { accent ->
+        Icon(
+            imageVector = Icons.Default.Star,
+            contentDescription = null,
+            tint = accent,
+            modifier = Modifier.size(11.dp)
+        )
+        Spacer(Modifier.width(3.dp))
+        Text(
+            text = rating,
+            color = accent,
             fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
             maxLines = 1,

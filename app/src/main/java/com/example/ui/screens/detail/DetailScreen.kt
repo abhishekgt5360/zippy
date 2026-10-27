@@ -374,17 +374,7 @@ fun DetailScreen(
                             // Rating
                             val rating = subject?.imdbRatingValue
                             if (!rating.isNullOrBlank()) {
-                                Row(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(6.dp))
-                                        .background(MaterialTheme.colorScheme.surface)
-                                        .padding(horizontal = 7.dp, vertical = 3.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(Icons.Default.Star, null, tint = MaterialTheme.colorScheme.tertiary, modifier = Modifier.size(12.dp))
-                                    Spacer(Modifier.width(3.dp))
-                                    Text(rating, color = MaterialTheme.colorScheme.onSurface, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                }
+                                RatingBadge(rating = rating)
                             }
                             // Year
                             val year = subject?.releaseDate?.take(4)

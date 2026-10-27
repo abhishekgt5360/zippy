@@ -27,7 +27,10 @@ data class MovieItem(
     @Json(name = "rating") val rawRating: Any? = null,
     @Json(name = "year") val rawYear: Any? = null,
     val genre: String? = null,
-    @Json(name = "type") val rawType: Any? = null
+    @Json(name = "type") val rawType: Any? = null,
+    // Present on /search results; catalog rows omit them.
+    val country: String? = null,
+    val language: String? = null
 ) {
     constructor(
         name: String?,
@@ -139,7 +142,8 @@ data class SubjectDetail(
     val subtitles: String? = null,
     val hasResource: Boolean? = true,
     val cover: CoverDetail? = null,
-    val trailer: TrailerDetail? = null
+    val trailer: TrailerDetail? = null,
+    @Json(name = "isPornographic") val isPornographic: Boolean? = null
 ) {
     val subjectId: String?
         get() = rawSubjectId?.toString()

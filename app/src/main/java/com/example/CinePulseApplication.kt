@@ -7,12 +7,18 @@ import coil.ImageLoaderFactory
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import com.example.data.remote.NetworkClient
+import com.example.util.AdultFilter
+import com.example.util.NollywoodFilter
 
 class CinePulseApplication : Application(), ImageLoaderFactory {
     override fun onCreate() {
         super.onCreate()
         // Initialize network client with disk cache for fast movie loading
         NetworkClient.init(cacheDir)
+        // Load the bundled Nigerian-title blocklist before any feed is rendered.
+        NollywoodFilter.init(this)
+        // Load the verified adult-title blocklist used while 18+ is disabled.
+        AdultFilter.init(this)
     }
 
     override fun newImageLoader(): ImageLoader {

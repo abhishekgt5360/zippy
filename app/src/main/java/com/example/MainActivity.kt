@@ -9,6 +9,7 @@ import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
 import android.util.Rational
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -141,6 +142,13 @@ fun MainApp(
 
     val isDetailOpen = detailState.slug != null
     val isFullscreenPlaying = isLandscape && detailState.isPlaying
+
+    // Blocked titles that slipped past a surface's pre-filter surface here exactly once.
+    LaunchedEffect(detailState.blockedNotice) {
+        val notice = detailState.blockedNotice ?: return@LaunchedEffect
+        Toast.makeText(context, notice, Toast.LENGTH_SHORT).show()
+        viewModel.clearBlockedNotice()
+    }
 
     val exoPlayer = remember(context) { viewModel.getPlayer(context) }
 
@@ -361,6 +369,7 @@ fun MainApp(
                             onPresetSelected = { presetId -> viewModel.setCatalogPreset(presetId) },
                             onYearSelected = { year -> viewModel.setCatalogYear(year) },
                             onGenreSelected = { genre -> viewModel.setCatalogGenre(genre) },
+                            onAdultsOnlyChanged = { enabled -> viewModel.setCatalogAdultsOnly(enabled) },
                             onSortSelected = { sort -> viewModel.setCatalogSort(sort) },
                             onMovieClick = { movie ->
                                 viewModel.openDetail(movie.safeSlug, movie.subjectId, movie.safeName, movie.type, movie.posterUrl)
