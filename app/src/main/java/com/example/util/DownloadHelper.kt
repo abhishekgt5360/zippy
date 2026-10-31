@@ -24,12 +24,17 @@ object DownloadHelper {
             return
         }
 
+        if (url.contains(".m3u8", ignoreCase = true) || url.contains(".mpd", ignoreCase = true)) {
+            Toast.makeText(context, "Segmented streams (HLS/DASH) cannot be downloaded offline.", Toast.LENGTH_SHORT).show()
+            return
+        }
+
         try {
             val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager
                 ?: throw IllegalStateException("DownloadManager is not available on this device.")
 
             val safeTitle = title.replace(Regex("[^a-zA-Z0-9.-]"), "_").trim('_')
-            val ext = if (url.contains(".m3u8", ignoreCase = true)) "m3u8" else "mp4"
+            val ext = if (url.contains(".mkv", ignoreCase = true)) "mkv" else "mp4"
             val fileName = if (season != null && episode != null && season > 0 && episode > 0) {
                 "${safeTitle}_S${season}E${episode}_${resolution}.${ext}"
             } else {

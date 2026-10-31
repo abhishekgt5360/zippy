@@ -73,6 +73,11 @@ fun CatalogScreen(
     onResetFilters: () -> Unit = {},
     onRetry: () -> Unit = {},
     isAdultEnabled: Boolean = false,
+    onQuickCategorySelected: (CatalogType, String, String) -> Unit = { type, presetId, sort ->
+        onTypeSelected(type)
+        onPresetSelected(presetId)
+        onSortSelected(sort)
+    },
     modifier: Modifier = Modifier
 ) {
     val gridState = rememberLazyGridState()
@@ -239,6 +244,116 @@ fun CatalogScreen(
                     }
                 }
             }
+        }
+
+        // ── Quick Categories Bar ─────────────────────────────────────────────
+        val isTrendingSelected = selectedPreset.id == RegionalCategoryConfig.PRESET_ALL && uiState.selectedSort == "hottest"
+        val isPopularSelected = selectedPreset.id == RegionalCategoryConfig.PRESET_ALL && uiState.selectedSort == "foryou" && !uiState.adultsOnly
+        val isTopRatedSelected = selectedPreset.id == RegionalCategoryConfig.PRESET_ALL && uiState.selectedSort == "rating"
+        val isIndianMoviesSelected = uiState.type == CatalogType.MOVIES && selectedPreset.id == RegionalCategoryConfig.PRESET_INDIA
+        val isIndianTvSelected = uiState.type == CatalogType.TV_SERIES && selectedPreset.id == RegionalCategoryConfig.PRESET_INDIA
+        val isIntlMoviesSelected = uiState.type == CatalogType.MOVIES && selectedPreset.id == RegionalCategoryConfig.PRESET_US_UK_CA_AU
+        val isIntlTvSelected = uiState.type == CatalogType.TV_SERIES && selectedPreset.id == RegionalCategoryConfig.PRESET_US_UK_CA_AU
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 6.dp)
+                .horizontalScroll(rememberScrollState()),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            GlassChip(
+                label = "Trending",
+                selected = isTrendingSelected,
+                onClick = {
+                    applyFilter {
+                        onQuickCategorySelected(
+                            if (isAnimation) CatalogType.MOVIES else uiState.type,
+                            RegionalCategoryConfig.PRESET_ALL,
+                            "hottest"
+                        )
+                    }
+                }
+            )
+            GlassChip(
+                label = "Popular",
+                selected = isPopularSelected,
+                onClick = {
+                    applyFilter {
+                        onQuickCategorySelected(
+                            if (isAnimation) CatalogType.MOVIES else uiState.type,
+                            RegionalCategoryConfig.PRESET_ALL,
+                            "foryou"
+                        )
+                    }
+                }
+            )
+            GlassChip(
+                label = "Top Rated",
+                selected = isTopRatedSelected,
+                onClick = {
+                    applyFilter {
+                        onQuickCategorySelected(
+                            if (isAnimation) CatalogType.MOVIES else uiState.type,
+                            RegionalCategoryConfig.PRESET_ALL,
+                            "rating"
+                        )
+                    }
+                }
+            )
+            GlassChip(
+                label = "Indian Movies",
+                selected = isIndianMoviesSelected,
+                onClick = {
+                    applyFilter {
+                        onQuickCategorySelected(
+                            CatalogType.MOVIES,
+                            RegionalCategoryConfig.PRESET_INDIA,
+                            uiState.selectedSort
+                        )
+                    }
+                }
+            )
+            GlassChip(
+                label = "Indian TV Shows",
+                selected = isIndianTvSelected,
+                onClick = {
+                    applyFilter {
+                        onQuickCategorySelected(
+                            CatalogType.TV_SERIES,
+                            RegionalCategoryConfig.PRESET_INDIA,
+                            uiState.selectedSort
+                        )
+                    }
+                }
+            )
+            GlassChip(
+                label = "US/UK/CA/AU Movies",
+                selected = isIntlMoviesSelected,
+                onClick = {
+                    applyFilter {
+                        onQuickCategorySelected(
+                            CatalogType.MOVIES,
+                            RegionalCategoryConfig.PRESET_US_UK_CA_AU,
+                            uiState.selectedSort
+                        )
+                    }
+                }
+            )
+            GlassChip(
+                label = "US/UK/CA/AU TV Shows",
+                selected = isIntlTvSelected,
+                onClick = {
+                    applyFilter {
+                        onQuickCategorySelected(
+                            CatalogType.TV_SERIES,
+                            RegionalCategoryConfig.PRESET_US_UK_CA_AU,
+                            uiState.selectedSort
+                        )
+                    }
+                }
+            )
         }
 
         // ── Filter bar: open sheet + removable active filters ─────────────────
@@ -419,7 +534,7 @@ fun CatalogScreen(
             }
         } else {
             val uniqueItems = remember(uiState.items) {
-                uiState.items.distinctBy { "${it.safeSlug}_${it.subjectId}" }
+                uiState.items.distinctBy { it.uniqueItemKey }
             }
             LazyVerticalGrid(
                 columns = GridCells.Adaptive(minSize = 110.dp),
@@ -439,7 +554,7 @@ fun CatalogScreen(
                 items(
                     count = uniqueItems.size,
                     key = { index ->
-                        "${uniqueItems[index].safeSlug}_${uniqueItems[index].subjectId}_$index"
+                        "${uniqueItems[index].uniqueItemKey}_$index"
                     }
                 ) { index ->
                     val movie = uniqueItems[index]

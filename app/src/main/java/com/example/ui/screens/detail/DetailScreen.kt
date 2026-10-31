@@ -62,6 +62,7 @@ fun DetailScreen(
     onStartOver: (subjectId: String, season: Int, episode: Int, isSeries: Boolean) -> Unit = { _, _, _, _ -> },
     onFetchStreamForDownload: suspend (season: Int, episode: Int) -> List<StreamSource>,
     onRefreshStream: (resumePos: Long) -> Unit = {},
+    onMovieClick: (com.example.data.model.MovieItem) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -236,6 +237,13 @@ fun DetailScreen(
                 }
             } else {
                 // ── Backdrop Header ──────────────────────────────────────────
+                val headerArtwork = uiState.tmdbDetail?.backdropUrl()
+                    ?: uiState.posterUrl
+                    ?: subject?.cover?.url
+                val posterArtwork = uiState.tmdbDetail?.posterUrl()
+                    ?: uiState.posterUrl
+                    ?: subject?.cover?.url
+
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -245,7 +253,7 @@ fun DetailScreen(
                     // Dimmed artwork fills the header while the full poster stays visible
                     AsyncImage(
                         model = ImageRequest.Builder(context)
-                            .data(subject?.cover?.url)
+                            .data(headerArtwork)
                             .size(32, 32)
                             .scale(Scale.FILL)
                             .crossfade(400)
@@ -261,7 +269,7 @@ fun DetailScreen(
                     )
                     AsyncImage(
                         model = ImageRequest.Builder(context)
-                            .data(subject?.cover?.url)
+                            .data(headerArtwork ?: posterArtwork)
                             .scale(Scale.FIT)
                             .crossfade(400)
                             .build(),
@@ -327,24 +335,27 @@ fun DetailScreen(
                         }
                     }
 
-                    // Play FAB (Brand Gradient with icon)
-                    Box(
-                        modifier = Modifier
-                            .size(62.dp)
-                            .align(Alignment.Center)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.primary)
-                            .border(1.dp, MaterialTheme.colorScheme.primary, CircleShape)
-                            .clickable(indication = null, interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }) {
-                                onPlayClick(
-                                    if (uiState.isSeries) uiState.selectedSeason else 0,
-                                    if (uiState.isSeries) uiState.selectedEpisode else 0
-                                )
-                            }
-                            .testTag("detail_play_fab"),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(Icons.Default.PlayArrow, null, tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(32.dp))
+                    // Play FAB (only visible when streaming is verified and available)
+                    val canPlayFab = uiState.isProviderAvailable || (uiState.tmdbId == null && com.example.data.model.MovieBoxPlaybackGuard.canInitiatePlayback(uiState.subjectId, uiState.slug))
+                    if (canPlayFab) {
+                        Box(
+                            modifier = Modifier
+                                .size(62.dp)
+                                .align(Alignment.Center)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primary)
+                                .border(1.dp, MaterialTheme.colorScheme.primary, CircleShape)
+                                .clickable(indication = null, interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }) {
+                                    onPlayClick(
+                                        if (uiState.isSeries) uiState.selectedSeason else 0,
+                                        if (uiState.isSeries) uiState.selectedEpisode else 0
+                                    )
+                                }
+                                .testTag("detail_play_fab"),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(Icons.Default.PlayArrow, null, tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(32.dp))
+                        }
                     }
                 }
             }
@@ -366,18 +377,31 @@ fun DetailScreen(
                             fontWeight = FontWeight.ExtraBold,
                             lineHeight = 26.sp
                         )
+                        val originalTitle = uiState.tmdbOriginalTitle ?: uiState.tmdbDetail?.safeOriginalTitle
+                        if (!originalTitle.isNullOrBlank() && !originalTitle.equals(uiState.title, ignoreCase = true)) {
+                            Spacer(Modifier.height(3.dp))
+                            Text(
+                                text = originalTitle,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Normal
+                            )
+                        }
                         Spacer(Modifier.height(8.dp))
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             // Rating
-                            val rating = subject?.imdbRatingValue
+                            val rating = uiState.tmdbDetail?.voteAverage?.takeIf { it > 0.0 }?.let {
+                                java.lang.String.format(java.util.Locale.US, "%.1f", it)
+                            } ?: subject?.imdbRatingValue
                             if (!rating.isNullOrBlank()) {
                                 RatingBadge(rating = rating)
                             }
                             // Year
-                            val year = subject?.releaseDate?.take(4)
+                            val year = uiState.tmdbDetail?.year
+                                ?: subject?.releaseDate?.take(4)
                             if (!year.isNullOrBlank()) {
                                 Text(year, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
                             }
@@ -395,69 +419,140 @@ fun DetailScreen(
                                     fontWeight = FontWeight.Bold
                                 )
                             }
-                            // Duration
-                            subject?.duration?.let { dur ->
-                                val mins = dur / 60
-                                if (mins > 0) Text("• ${mins}m", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                            // Duration or Seasons
+                            val durationText = if (uiState.isSeries) {
+                                uiState.tmdbDetail?.numberOfSeasons?.let { s ->
+                                    val eps = uiState.tmdbDetail.numberOfEpisodes ?: 0
+                                    "${s} Season${if (s > 1) "s" else ""}${if (eps > 0) " • ${eps} Ep" else ""}"
+                                }
+                            } else {
+                                uiState.tmdbDetail?.runtime?.takeIf { it > 0 }?.let { "${it}m" }
+                                    ?: subject?.duration?.let { dur ->
+                                        val mins = dur / 60
+                                        if (mins > 0) "${mins}m" else null
+                                    }
+                            }
+                            if (!durationText.isNullOrBlank()) {
+                                Text("• $durationText", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
                             }
                         }
 
-                        subject?.genre?.let { genre ->
+                        // Genres
+                        val genresText = uiState.tmdbDetail?.genres?.mapNotNull { it.name }?.filter { it.isNotBlank() }?.joinToString(", ")
+                            ?.ifBlank { null }
+                            ?: subject?.genre
+                        if (!genresText.isNullOrBlank()) {
                             Spacer(Modifier.height(6.dp))
-                            Text(genre, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                            Text(genresText, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                        }
+
+                        // Director / Crew
+                        uiState.directorName?.let { dir ->
+                            Spacer(Modifier.height(4.dp))
+                            Text("Director: $dir", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, fontWeight = FontWeight.Medium)
                         }
 
                         Spacer(Modifier.height(16.dp))
 
-                        // Action buttons
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            val startMs = uiState.session?.startPositionMs ?: 0L
-                            LiquidGlassButton(
-                                text = run {
-                                    when {
-                                        startMs > 60000L -> {
-                                            val mins = (startMs / 1000) / 60
-                                            "Resume (${mins}m)"
+                        // Action buttons or provider availability status
+                        val canStream = uiState.isProviderAvailable || (uiState.tmdbId == null && com.example.data.model.MovieBoxPlaybackGuard.canInitiatePlayback(uiState.subjectId, uiState.slug))
+                        if (canStream) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                val startMs = uiState.session?.startPositionMs ?: 0L
+                                LiquidGlassButton(
+                                    text = run {
+                                        when {
+                                            startMs > 60000L -> {
+                                                val mins = (startMs / 1000) / 60
+                                                "Resume (${mins}m)"
+                                            }
+                                            uiState.isSeries -> "Play S${uiState.selectedSeason}:E${uiState.selectedEpisode}"
+                                            else -> "Watch Movie"
                                         }
-                                        uiState.isSeries -> "Play S${uiState.selectedSeason}:E${uiState.selectedEpisode}"
-                                        else -> "Watch Movie"
-                                    }
-                                },
-                                onClick = {
-                                    onPlayClick(
-                                        if (uiState.isSeries) uiState.selectedSeason else 0,
-                                        if (uiState.isSeries) uiState.selectedEpisode else 0
-                                    )
-                                },
-                                icon = Icons.Default.PlayArrow,
-                                modifier = Modifier.weight(1f).testTag("detail_watch_button")
-                            )
-
-                            // Download button
-                            Box(
-                                modifier = Modifier
-                                    .height(46.dp)
-                                    .clip(RoundedCornerShape(999.dp))
-                                    .background(MaterialTheme.colorScheme.surfaceContainer)
-                                    .clickable(indication = null, interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }) {
-                                        triggerDownload(
+                                    },
+                                    onClick = {
+                                        onPlayClick(
                                             if (uiState.isSeries) uiState.selectedSeason else 0,
                                             if (uiState.isSeries) uiState.selectedEpisode else 0
                                         )
+                                    },
+                                    icon = Icons.Default.PlayArrow,
+                                    modifier = Modifier.weight(1f).testTag("detail_watch_button")
+                                )
+
+                                // Download button
+                                Box(
+                                    modifier = Modifier
+                                        .height(46.dp)
+                                        .clip(RoundedCornerShape(999.dp))
+                                        .background(MaterialTheme.colorScheme.surfaceContainer)
+                                        .clickable(indication = null, interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }) {
+                                            triggerDownload(
+                                                if (uiState.isSeries) uiState.selectedSeason else 0,
+                                                if (uiState.isSeries) uiState.selectedEpisode else 0
+                                            )
+                                        }
+                                        .padding(horizontal = 16.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        if (isFetchingDownload) {
+                                            CircularProgressIndicator(color = MaterialTheme.colorScheme.tertiary, strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
+                                        } else {
+                                            Icon(Icons.Default.Download, null, tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(18.dp))
+                                        }
+                                        Text("Download", color = MaterialTheme.colorScheme.onSurface, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                                     }
-                                    .padding(horizontal = 16.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    if (isFetchingDownload) {
-                                        CircularProgressIndicator(color = MaterialTheme.colorScheme.tertiary, strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
-                                    } else {
-                                        Icon(Icons.Default.Download, null, tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(18.dp))
+                                }
+                            }
+                        } else if (uiState.isMatchingProvider) {
+                            LiquidGlassCard(cornerRadius = 14.dp, modifier = Modifier.fillMaxWidth()) {
+                                Row(
+                                    modifier = Modifier.padding(14.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    CircularProgressIndicator(
+                                        color = MaterialTheme.colorScheme.primary,
+                                        strokeWidth = 2.dp,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Text(
+                                        text = "Checking streaming availability...",
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontSize = 13.sp
+                                    )
+                                }
+                            }
+                        } else {
+                            LiquidGlassCard(cornerRadius = 14.dp, modifier = Modifier.fillMaxWidth()) {
+                                Row(
+                                    modifier = Modifier.padding(14.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Info,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                    Column {
+                                        Text(
+                                            text = "Streaming Unavailable",
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            fontSize = 14.sp,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        Text(
+                                            text = "No verified streaming provider match found for this title.",
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            fontSize = 12.sp
+                                        )
                                     }
-                                    Text("Download", color = MaterialTheme.colorScheme.onSurface, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                                 }
                             }
                         }
@@ -466,12 +561,15 @@ fun DetailScreen(
 
                     // Synopsis
                     item {
+                        val synopsis = uiState.tmdbDetail?.overview?.takeIf { it.isNotBlank() }
+                            ?: subject?.description?.ifBlank { null }
+                            ?: "No synopsis available."
                         LiquidGlassCard(cornerRadius = 16.dp) {
                             Column(modifier = Modifier.padding(16.dp)) {
                                 Text("Synopsis", color = MaterialTheme.colorScheme.onSurface, fontSize = 15.sp, fontWeight = FontWeight.Bold)
                                 Spacer(Modifier.height(8.dp))
                                 Text(
-                                    text = subject?.description?.ifBlank { "No synopsis available." } ?: "No synopsis available.",
+                                    text = synopsis,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     fontSize = 13.sp,
                                     lineHeight = 19.sp
@@ -482,8 +580,41 @@ fun DetailScreen(
                     }
 
                     // Cast & Crew
+                    val tmdbCast = uiState.tmdbDetail?.credits?.cast.orEmpty()
                     val stars = uiState.detail?.data?.stars.orEmpty()
-                    if (stars.isNotEmpty()) {
+                    if (tmdbCast.isNotEmpty()) {
+                        item {
+                            Text("Cast & Crew", color = MaterialTheme.colorScheme.onSurface, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.height(10.dp))
+                            LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                items(tmdbCast.take(15), key = { "tmdb_cast_${it.id}" }) { member ->
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        modifier = Modifier.width(72.dp)
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(58.dp)
+                                                .clip(CircleShape)
+                                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                                                .border(0.8.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape)
+                                        ) {
+                                            AsyncImage(
+                                                model = ImageRequest.Builder(context).data(member.profileUrl).crossfade(true).build(),
+                                                contentDescription = member.name,
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier.fillMaxSize()
+                                            )
+                                        }
+                                        Spacer(Modifier.height(5.dp))
+                                        Text(member.name, color = MaterialTheme.colorScheme.onSurface, fontSize = 10.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                                        Text(member.character ?: "", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 9.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                                    }
+                                }
+                            }
+                            Spacer(Modifier.height(18.dp))
+                        }
+                    } else if (stars.isNotEmpty()) {
                         item {
                             Text("Cast & Crew", color = MaterialTheme.colorScheme.onSurface, fontSize = 15.sp, fontWeight = FontWeight.Bold)
                             Spacer(Modifier.height(10.dp))
@@ -711,6 +842,55 @@ fun DetailScreen(
                                     }
                                 }
                             }
+                        }
+                    }
+
+                    // Series season summary (when TMDB TV seasons are available without active provider streaming)
+                    if (uiState.isSeries && uiState.availableSeasons.isEmpty() && !uiState.tmdbDetail?.seasons.isNullOrEmpty()) {
+                        val validSeasons = uiState.tmdbDetail?.seasons.orEmpty().filter { it.seasonNumber > 0 }
+                        if (validSeasons.isNotEmpty()) {
+                            item {
+                                Text("Seasons & Episodes", color = MaterialTheme.colorScheme.onSurface, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                                Spacer(Modifier.height(10.dp))
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    validSeasons.forEach { s ->
+                                        LiquidGlassCard(cornerRadius = 12.dp) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                Text(
+                                                    text = s.name?.ifBlank { "Season ${s.seasonNumber}" } ?: "Season ${s.seasonNumber}",
+                                                    color = MaterialTheme.colorScheme.onSurface,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    fontSize = 13.sp
+                                                )
+                                                Text("${s.episodeCount} Episodes", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                                            }
+                                        }
+                                    }
+                                }
+                                Spacer(Modifier.height(18.dp))
+                            }
+                        }
+                    }
+
+                    // More Like This (TMDB Recommendations / Similar titles)
+                    if (uiState.recommendations.isNotEmpty()) {
+                        item {
+                            Text("More Like This", color = MaterialTheme.colorScheme.onSurface, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.height(10.dp))
+                            LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                items(uiState.recommendations, key = { it.uniqueItemKey }) { rec ->
+                                    MoviePosterCard(
+                                        movie = rec,
+                                        onClick = { onMovieClick(rec) },
+                                        modifier = Modifier.width(115.dp)
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.height(18.dp))
                         }
                     }
                 }

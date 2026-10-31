@@ -76,7 +76,7 @@ fun MoviePosterCard(
     Column(
         modifier = modifier
             .width(cardWidth)
-            .testTag("movie_card_${movie.safeSlug}")
+            .testTag("movie_card_${movie.safeSlug.ifBlank { movie.uniqueItemKey }}")
     ) {
         PosterImage(
             imageUrl = movie.posterUrl,

@@ -22,3 +22,4 @@ debug.keystore
 *.jks
 *.keystore
 google-services.json
+phase2_prepared/

@@ -459,7 +459,7 @@ fun LibraryScreen(
                         ) {
                             items(
                                 count = watchlist.size,
-                                key = { i -> "${watchlist[i].subjectId}_$i" }
+                                key = { i -> "${watchlist[i].id}_$i" }
                             ) { i ->
                                 val item = watchlist[i]
                                 val movie = MovieItem(
@@ -470,7 +470,12 @@ fun LibraryScreen(
                                     rating = item.rating,
                                     year = item.year,
                                     genre = item.genre,
-                                    type = item.type
+                                    type = item.type,
+                                    tmdbId = item.tmdbId,
+                                    tmdbMediaType = item.tmdbMediaType,
+                                    tmdbOriginalTitle = item.tmdbOriginalTitle,
+                                    tmdbOriginalLanguage = item.tmdbOriginalLanguage,
+                                    tmdbCountry = item.tmdbCountry
                                 )
                                 MoviePosterCard(
                                     movie = movie,

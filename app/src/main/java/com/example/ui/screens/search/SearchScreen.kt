@@ -27,6 +27,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.TrendingUp
 import androidx.compose.material3.*
@@ -252,10 +253,11 @@ fun SearchScreen(
         // ── Content Area ─────────────────────────────────────────────────────
         AnimatedContent(
             targetState = when {
-                uiState.isSearching               -> "loading"
-                uiState.results.isNotEmpty()       -> "results"
-                uiState.query.isNotBlank()         -> "empty_query"
-                else                               -> "idle"
+                uiState.isSearching                                       -> "loading"
+                uiState.errorMessage != null && uiState.results.isEmpty() -> "error"
+                uiState.results.isNotEmpty()                              -> "results"
+                uiState.query.isNotBlank()                                -> "empty_query"
+                else                                                      -> "idle"
             },
             transitionSpec = {
                 fadeIn(tween(260)) togetherWith fadeOut(tween(180))
@@ -268,10 +270,69 @@ fun SearchScreen(
                 // Loading shimmer
                 "loading" -> ShimmerGrid()
 
+                // Error state
+                "error" -> {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(32.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(24.dp))
+                                .background(MaterialTheme.colorScheme.surfaceContainer)
+                                .padding(32.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(64.dp)
+                                        .clip(RoundedCornerShape(20.dp))
+                                        .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Refresh,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.tertiary,
+                                        modifier = Modifier.size(30.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Text(
+                                    text = "Search Error",
+                                    style = MaterialTheme.typography.titleMedium.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        textAlign = TextAlign.Center
+                                    )
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = uiState.errorMessage ?: "Failed to load results. Please check your connection.",
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        textAlign = TextAlign.Center
+                                    )
+                                )
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Button(
+                                    onClick = { onSearchSubmit(uiState.query) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                                ) {
+                                    Text("Retry", fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Results grid
                 "results" -> {
                     val uniqueResults = remember(uiState.results) {
-                        uiState.results.distinctBy { "${it.safeSlug}_${it.subjectId}" }
+                        uiState.results.distinctBy { it.uniqueItemKey }
                     }
                     LazyVerticalGrid(
                         columns = GridCells.Adaptive(minSize = 110.dp),
@@ -287,7 +348,7 @@ fun SearchScreen(
                     ) {
                         items(
                             count = uniqueResults.size,
-                            key = { i -> "${uniqueResults[i].safeSlug}_${uniqueResults[i].subjectId}_$i" }
+                            key = { i -> "${uniqueResults[i].uniqueItemKey}_$i" }
                         ) { i ->
                             val movie = uniqueResults[i]
                             MoviePosterCard(

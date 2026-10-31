@@ -225,14 +225,14 @@ fun HomeScreen(
                     Spacer(Modifier.height(10.dp))
 
                     val uniqueItems = remember(section.items) {
-                        section.items.distinctBy { "${it.safeSlug}_${it.subjectId}" }
+                        section.items.distinctBy { it.uniqueItemKey }
                     }
 
                     LazyRow(
                         contentPadding = PaddingValues(horizontal = 18.dp),
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        items(uniqueItems, key = { "${it.safeSlug}_${it.subjectId}" }) { movie ->
+                        items(uniqueItems, key = { it.uniqueItemKey }) { movie ->
                             MoviePosterCard(
                                 movie = movie,
                                 onClick = { onMovieClick(movie) }

@@ -249,6 +249,9 @@ fun VideoPlayer(
                     val mediaItem = MediaItem.Builder()
                         .setMediaId(url)
                         .setUri(url)
+                        .apply {
+                            currentSource?.resolveMimeType()?.let { setMimeType(it) }
+                        }
                         .build()
                     exoPlayer.setMediaItem(mediaItem, startPosMs.coerceAtLeast(0L))
                     exoPlayer.prepare()
@@ -420,6 +423,9 @@ fun VideoPlayer(
                                 val mediaItem = MediaItem.Builder()
                                     .setMediaId(targetSource.url)
                                     .setUri(targetSource.url)
+                                    .apply {
+                                        targetSource.resolveMimeType()?.let { setMimeType(it) }
+                                    }
                                     .build()
                                 exoPlayer.setMediaItem(mediaItem, safePos)
                                 exoPlayer.prepare()
@@ -433,7 +439,13 @@ fun VideoPlayer(
                                 val url = currentSource?.url
                                 val safePos = resumePos.coerceAtLeast(0L)
                                 if (!url.isNullOrBlank()) {
-                                    val mediaItem = MediaItem.Builder().setMediaId(url).setUri(url).build()
+                                    val mediaItem = MediaItem.Builder()
+                                        .setMediaId(url)
+                                        .setUri(url)
+                                        .apply {
+                                            currentSource?.resolveMimeType()?.let { setMimeType(it) }
+                                        }
+                                        .build()
                                     exoPlayer.setMediaItem(mediaItem, safePos)
                                 }
                                 exoPlayer.prepare()
@@ -842,6 +854,9 @@ fun VideoPlayer(
                                             val mediaItem = MediaItem.Builder()
                                                 .setMediaId(targetSource.url)
                                                 .setUri(targetSource.url)
+                                                .apply {
+                                                    targetSource.resolveMimeType()?.let { setMimeType(it) }
+                                                }
                                                 .build()
                                             exoPlayer.setMediaItem(mediaItem, safePos)
                                             exoPlayer.prepare()
@@ -871,7 +886,13 @@ fun VideoPlayer(
                                             val url = currentSource?.url
                                             val safePos = currentPosition.coerceAtLeast(0L)
                                             if (!url.isNullOrBlank()) {
-                                                val mediaItem = MediaItem.Builder().setMediaId(url).setUri(url).build()
+                                                val mediaItem = MediaItem.Builder()
+                                                    .setMediaId(url)
+                                                    .setUri(url)
+                                                    .apply {
+                                                        currentSource?.resolveMimeType()?.let { setMimeType(it) }
+                                                    }
+                                                    .build()
                                                 exoPlayer.setMediaItem(mediaItem, safePos)
                                             } else if (safePos > 0L) {
                                                 exoPlayer.seekTo(safePos)

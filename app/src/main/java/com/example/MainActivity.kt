@@ -314,6 +314,9 @@ fun MainApp(
                         } else {
                             emptyList()
                         }
+                    },
+                    onMovieClick = { movie ->
+                        viewModel.openDetail(movie)
                     }
                 )
             } else {
@@ -323,26 +326,35 @@ fun MainApp(
                             uiState = homeState,
                             watchHistory = watchHistory,
                             onMovieClick = { movie ->
-                                viewModel.openDetail(movie.safeSlug, movie.subjectId, movie.safeName, movie.type, movie.posterUrl)
+                                viewModel.openDetail(movie)
                             },
                             onWatchHeroClick = { movie ->
-                                val isSeries = movie.isTvSeries
-                                viewModel.openDetail(movie.safeSlug, movie.subjectId, movie.safeName, movie.type, movie.posterUrl)
-                                viewModel.playItem(
-                                    slug = movie.safeSlug,
-                                    subjectId = movie.subjectId,
-                                    season = if (isSeries) 1 else 0,
-                                    episode = if (isSeries) 1 else 0
-                                )
+                                viewModel.openDetail(movie)
+                                if (movie.canInitiatePlayback) {
+                                    val isSeries = movie.isTvSeries
+                                    viewModel.playItem(
+                                        slug = movie.safeSlug,
+                                        subjectId = movie.subjectId,
+                                        season = if (isSeries) 1 else 0,
+                                        episode = if (isSeries) 1 else 0
+                                    )
+                                }
                             },
                             onResumeHistoryClick = { history ->
-                                viewModel.openDetail(history.slug, history.subjectId, history.title, history.type, history.posterUrl)
+                                viewModel.openDetail(
+                                    slug = history.slug,
+                                    subjectId = history.subjectId,
+                                    title = history.title,
+                                    initialType = history.type,
+                                    posterUrl = history.posterUrl,
+                                    tmdbId = history.tmdbId
+                                )
                                 viewModel.playItem(history.slug, history.subjectId, history.season, history.episode, history.positionMs)
                             },
                             onDeleteHistoryClick = { subId ->
                                 viewModel.deleteHistory(subId)
                             },
-                            onRetry = { viewModel.loadHomeFeed() },
+                            onRetry = { viewModel.loadHomeFeed(forceRefresh = true) },
                             onSearchClick = { viewModel.selectTab(AppTab.SEARCH) },
                             onSeeAllClick = { sectionName ->
                                 if (sectionName.equals("History", ignoreCase = true)) {
@@ -350,13 +362,65 @@ fun MainApp(
                                     libraryInitialTab = LibraryTab.HISTORY
                                     viewModel.selectTab(AppTab.LIBRARY)
                                 } else {
-                                    if (sectionName.equals(com.example.util.RegionalCategoryConfig.ROW_TITLE, ignoreCase = true)) {
-                                        viewModel.openCatalogPreset(
-                                            presetId = com.example.util.RegionalCategoryConfig.PRESET_INDIA,
-                                            type = com.example.ui.CatalogType.MOVIES
-                                        )
+                                    when {
+                                        sectionName.contains("Indian TV", ignoreCase = true) -> {
+                                            viewModel.openCatalogCategory(
+                                                type = com.example.ui.CatalogType.TV_SERIES,
+                                                presetId = com.example.util.RegionalCategoryConfig.PRESET_INDIA
+                                            )
+                                        }
+                                        sectionName.contains("Indian", ignoreCase = true) || sectionName.equals(com.example.util.RegionalCategoryConfig.ROW_TITLE, ignoreCase = true) -> {
+                                            viewModel.openCatalogCategory(
+                                                type = com.example.ui.CatalogType.MOVIES,
+                                                presetId = com.example.util.RegionalCategoryConfig.PRESET_INDIA
+                                            )
+                                        }
+                                        sectionName.contains("Trending TV", ignoreCase = true) -> {
+                                            viewModel.openCatalogCategory(
+                                                type = com.example.ui.CatalogType.TV_SERIES,
+                                                sort = "hottest"
+                                            )
+                                        }
+                                        sectionName.contains("Trending", ignoreCase = true) -> {
+                                            viewModel.openCatalogCategory(
+                                                type = com.example.ui.CatalogType.MOVIES,
+                                                sort = "hottest"
+                                            )
+                                        }
+                                        sectionName.contains("Popular TV", ignoreCase = true) -> {
+                                            viewModel.openCatalogCategory(
+                                                type = com.example.ui.CatalogType.TV_SERIES,
+                                                sort = "foryou"
+                                            )
+                                        }
+                                        sectionName.contains("Popular", ignoreCase = true) -> {
+                                            viewModel.openCatalogCategory(
+                                                type = com.example.ui.CatalogType.MOVIES,
+                                                sort = "foryou"
+                                            )
+                                        }
+                                        sectionName.contains("Top Rated TV", ignoreCase = true) -> {
+                                            viewModel.openCatalogCategory(
+                                                type = com.example.ui.CatalogType.TV_SERIES,
+                                                sort = "rating"
+                                            )
+                                        }
+                                        sectionName.contains("Top Rated", ignoreCase = true) -> {
+                                            viewModel.openCatalogCategory(
+                                                type = com.example.ui.CatalogType.MOVIES,
+                                                sort = "rating"
+                                            )
+                                        }
+                                        sectionName.contains("Upcoming", ignoreCase = true) -> {
+                                            viewModel.openCatalogCategory(
+                                                type = com.example.ui.CatalogType.MOVIES,
+                                                sort = "latest"
+                                            )
+                                        }
+                                        else -> {
+                                            viewModel.selectTab(AppTab.CATALOG)
+                                        }
                                     }
-                                    viewModel.selectTab(AppTab.CATALOG)
                                 }
                             }
                         )
@@ -372,12 +436,15 @@ fun MainApp(
                             onAdultsOnlyChanged = { enabled -> viewModel.setCatalogAdultsOnly(enabled) },
                             onSortSelected = { sort -> viewModel.setCatalogSort(sort) },
                             onMovieClick = { movie ->
-                                viewModel.openDetail(movie.safeSlug, movie.subjectId, movie.safeName, movie.type, movie.posterUrl)
+                                viewModel.openDetail(movie)
                             },
                             onLoadMore = { viewModel.loadCatalog(reset = false) },
                             onResetFilters = { viewModel.resetCatalogFilters() },
                             onRetry = { viewModel.loadCatalog(reset = true) },
-                            isAdultEnabled = isAdultEnabled
+                            isAdultEnabled = isAdultEnabled,
+                            onQuickCategorySelected = { type, presetId, sort ->
+                                viewModel.openCatalogCategory(type, presetId, sort)
+                            }
                         )
                     }
 
@@ -387,7 +454,7 @@ fun MainApp(
                             onQueryChanged = { q -> viewModel.onSearchQueryChanged(q) },
                             onSearchSubmit = { q -> viewModel.performSearch(q) },
                             onMovieClick = { movie ->
-                                viewModel.openDetail(movie.safeSlug, movie.subjectId, movie.safeName, movie.type, movie.posterUrl)
+                                viewModel.openDetail(movie)
                             }
                         )
                     }
@@ -398,10 +465,17 @@ fun MainApp(
                             watchHistory = watchHistory,
                             initialTab = libraryInitialTab,
                             onMovieClick = { movie ->
-                                viewModel.openDetail(movie.safeSlug, movie.subjectId, movie.safeName, movie.type, movie.posterUrl)
+                                viewModel.openDetail(movie)
                             },
                             onResumeHistoryClick = { history ->
-                                viewModel.openDetail(history.slug, history.subjectId, history.title, history.type, history.posterUrl)
+                                viewModel.openDetail(
+                                    slug = history.slug,
+                                    subjectId = history.subjectId,
+                                    title = history.title,
+                                    initialType = history.type,
+                                    posterUrl = history.posterUrl,
+                                    tmdbId = history.tmdbId
+                                )
                                 viewModel.playItem(history.slug, history.subjectId, history.season, history.episode, history.positionMs)
                             },
                             onDeleteHistoryItem = { subId ->

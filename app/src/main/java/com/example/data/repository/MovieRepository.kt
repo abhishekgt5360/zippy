@@ -19,16 +19,17 @@ import kotlinx.coroutines.withContext
 class MovieRepository(
     private val api: MovieApiService = NetworkClient.api,
     private val database: AppDatabase,
-    private val context: android.content.Context? = null
+    context: android.content.Context? = null
 ) {
+    private val cacheDir = context?.applicationContext?.cacheDir ?: context?.cacheDir
     private val dao = database.watchDao()
     private val homeJsonAdapter by lazy { NetworkClient.moshi.adapter(HomeResponse::class.java) }
     private val catalogJsonAdapter by lazy { NetworkClient.moshi.adapter(CatalogResponse::class.java) }
     private val cacheFile by lazy {
-        context?.cacheDir?.resolve("cached_home_feed.json")
+        cacheDir?.resolve("cached_home_feed.json")
     }
     private val bollywoodCacheFile by lazy {
-        context?.cacheDir?.resolve("cached_bollywood_feed.json")
+        cacheDir?.resolve("cached_bollywood_feed.json")
     }
 
     private fun writeCacheAtomically(file: java.io.File?, content: String) {
@@ -292,6 +293,7 @@ class MovieRepository(
                 val response = api.search(query = query, page = page)
                 Result.success(response)
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 Result.failure(e)
             }
         }
@@ -302,16 +304,23 @@ class MovieRepository(
                 val response = api.getSuggestions(query)
                 Result.success(response)
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 Result.failure(e)
             }
         }
 
     suspend fun getDetail(slug: String): Result<DetailResponse> =
         withContext(Dispatchers.IO) {
+            if (!MovieBoxPlaybackGuard.isValidMovieBoxSlug(slug)) {
+                return@withContext Result.failure(
+                    IllegalArgumentException("Cannot request MovieBox detail: Invalid or TMDB-generated slug '$slug'.")
+                )
+            }
             try {
                 val response = api.getDetail(slug)
                 Result.success(response)
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 Result.failure(e)
             }
         }
@@ -323,20 +332,45 @@ class MovieRepository(
         episode: Int,
         isSeries: Boolean = false
     ): Result<StreamResponse> = withContext(Dispatchers.IO) {
+        val tmdbIdFromSlug = MovieBoxPlaybackGuard.extractTmdbIdFromSlug(slug)
+        if (!MovieBoxPlaybackGuard.canInitiatePlayback(subjectId, slug, tmdbIdFromSlug)) {
+            return@withContext Result.failure(
+                IllegalArgumentException("Cannot request stream: Invalid or unverified MovieBox subjectId '$subjectId' or slug '$slug'.")
+            )
+        }
         try {
             // For movies, Zar MovieBox API explicitly expects se=0, ep=0!
             val initialSe = if (isSeries) season.coerceAtLeast(1) else 0
             val initialEp = if (isSeries) episode.coerceAtLeast(1) else 0
 
-            var response = try {
-                api.getStream(subjectId = subjectId, detailPath = slug, season = initialSe, episode = initialEp)
+            var usableResponse: StreamResponse? = null
+            var anyNetworkFailure = false
+            var lastNetworkException: Exception? = null
+            var lastEmptyResponse: StreamResponse? = null
+
+            try {
+                val initial = api.getStream(subjectId = subjectId, detailPath = slug, season = initialSe, episode = initialEp)
+                if (initial.hasUsableStreams) {
+                    usableResponse = initial
+                } else {
+                    lastEmptyResponse = initial
+                }
             } catch (e: Exception) {
-                StreamResponse(subjectId = subjectId, hasResource = false, sources = emptyList())
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                anyNetworkFailure = true
+                lastNetworkException = e
             }
 
-            if (!response.hasResource || response.sources.isEmpty()) {
+            if (usableResponse == null) {
+                // For TV series, alternative (0,0)/(1,0)/(0,1) indexing is only valid for Season 1 Episode 1
+                // where providers may use 0-based vs 1-based indexing for the pilot episode.
+                // For later episodes (e.g. S2E5), falling back to (1,1) would wrongly substitute S1E1.
                 val fallbacks = if (isSeries) {
-                    listOf(Pair(season, episode), Pair(0, 0), Pair(1, 1), Pair(0, 1), Pair(1, 0))
+                    if (initialSe <= 1 && initialEp <= 1) {
+                        listOf(Pair(0, 0), Pair(1, 1), Pair(0, 1), Pair(1, 0))
+                    } else {
+                        emptyList()
+                    }
                 } else {
                     listOf(Pair(0, 0), Pair(1, 1), Pair(0, 1), Pair(1, 0))
                 }.filter { it.first != initialSe || it.second != initialEp }
@@ -344,15 +378,59 @@ class MovieRepository(
                 for ((s, e) in fallbacks) {
                     try {
                         val alt = api.getStream(subjectId = subjectId, detailPath = slug, season = s, episode = e)
-                        if (alt.hasResource && alt.sources.isNotEmpty()) {
-                            response = alt
+                        if (alt.hasUsableStreams) {
+                            usableResponse = alt
                             break
+                        } else {
+                            lastEmptyResponse = alt
                         }
-                    } catch (_: Exception) {}
+                    } catch (e: Exception) {
+                        if (e is kotlinx.coroutines.CancellationException) throw e
+                        anyNetworkFailure = true
+                        lastNetworkException = e
+                    }
                 }
             }
-            Result.success(response)
+
+            // C. At least one request returned usable streams:
+            if (usableResponse != null) {
+                // TV Episode Identity Protection:
+                // If this is a TV series request beyond the pilot episode, verify that provider metadata
+                // did not substitute a different season or episode (e.g., silently serving S1E1 for S2E5).
+                val isEpisodeMismatch = isSeries && (initialSe > 1 || initialEp > 1) &&
+                    usableResponse.se != null && usableResponse.ep != null &&
+                    (usableResponse.se != initialSe || usableResponse.ep != initialEp)
+
+                if (isEpisodeMismatch) {
+                    val error = IllegalStateException(
+                        "Episode identity mismatch: requested S${initialSe}E${initialEp} but provider returned S${usableResponse.se}E${usableResponse.ep}"
+                    )
+                    Result.failure(error)
+                } else {
+                    val cleanSources = usableResponse.effectiveSources.filter { it.url.isNotBlank() }
+                    val finalResponse = if (cleanSources.isNotEmpty()) {
+                        usableResponse.copy(sources = cleanSources)
+                    } else {
+                        usableResponse.copy(sources = emptyList(), hasResource = false)
+                    }
+                    Result.success(finalResponse)
+                }
+            } else if (anyNetworkFailure) {
+                // B. Requests failed due to network errors and no usable stream was found:
+                // Return Result.failure(exception). Do not silently return an empty response from another attempt.
+                val error = lastNetworkException ?: java.io.IOException("Stream fallback encountered network failures with no usable streams")
+                Result.failure(error)
+            } else {
+                // A. All attempted requests completed successfully and returned no usable streams
+                val emptyResult = lastEmptyResponse ?: StreamResponse(
+                    rawSubjectId = subjectId,
+                    hasResource = false,
+                    sources = emptyList()
+                )
+                Result.success(emptyResult)
+            }
         } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
             Result.failure(e)
         }
     }
@@ -364,6 +442,12 @@ class MovieRepository(
         episode: Int,
         isSeries: Boolean = false
     ): Result<CaptionsResponse> = withContext(Dispatchers.IO) {
+        val tmdbIdFromSlug = MovieBoxPlaybackGuard.extractTmdbIdFromSlug(slug)
+        if (!MovieBoxPlaybackGuard.canInitiatePlayback(subjectId, slug, tmdbIdFromSlug)) {
+            return@withContext Result.failure(
+                IllegalArgumentException("Cannot request captions: Invalid or unverified MovieBox subjectId '$subjectId' or slug '$slug'.")
+            )
+        }
         try {
             val initialSe = if (isSeries) season.coerceAtLeast(1) else 0
             val initialEp = if (isSeries) episode.coerceAtLeast(1) else 0
@@ -371,14 +455,19 @@ class MovieRepository(
             var response = try {
                 api.getCaptions(subjectId = subjectId, detailPath = slug, season = initialSe, episode = initialEp)
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 CaptionsResponse(subjectId = subjectId, captions = emptyList())
             }
 
             if (response.captions.isEmpty()) {
                 val fallbacks = if (isSeries) {
-                    listOf(Pair(season, episode), Pair(0, 0), Pair(1, 1), Pair(0, 1))
+                    if (initialSe <= 1 && initialEp <= 1) {
+                        listOf(Pair(0, 0), Pair(1, 1), Pair(0, 1), Pair(1, 0))
+                    } else {
+                        emptyList()
+                    }
                 } else {
-                    listOf(Pair(0, 0), Pair(1, 1), Pair(0, 1))
+                    listOf(Pair(0, 0), Pair(1, 1), Pair(0, 1), Pair(1, 0))
                 }.filter { it.first != initialSe || it.second != initialEp }
 
                 for ((s, e) in fallbacks) {
@@ -388,11 +477,14 @@ class MovieRepository(
                             response = alt
                             break
                         }
-                    } catch (_: Exception) {}
+                    } catch (e: Exception) {
+                        if (e is kotlinx.coroutines.CancellationException) throw e
+                    }
                 }
             }
             Result.success(response)
         } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
             Result.failure(e)
         }
     }
@@ -414,7 +506,7 @@ class MovieRepository(
         episode: Int,
         isSeries: Boolean
     ): Long = withContext(Dispatchers.IO) {
-        if (subjectId.isBlank()) return@withContext 0L
+        if (!MovieBoxPlaybackGuard.isValidMovieBoxSubjectId(subjectId)) return@withContext 0L
         val se = if (isSeries) season.coerceAtLeast(1) else 0
         val ep = if (isSeries) episode.coerceAtLeast(1) else 0
         try {
@@ -446,7 +538,7 @@ class MovieRepository(
         episode: Int,
         isSeries: Boolean
     ) = withContext(Dispatchers.IO) {
-        if (subjectId.isBlank()) return@withContext
+        if (!MovieBoxPlaybackGuard.isValidMovieBoxSubjectId(subjectId)) return@withContext
         val se = if (isSeries) season.coerceAtLeast(1) else 0
         val ep = if (isSeries) episode.coerceAtLeast(1) else 0
         try {
@@ -473,9 +565,11 @@ class MovieRepository(
         episode: Int,
         positionMs: Long,
         durationMs: Long,
-        type: String?
+        type: String?,
+        tmdbId: Long? = null,
+        tmdbMediaType: String? = null
     ) = withContext(Dispatchers.IO) {
-        if (subjectId.isBlank()) return@withContext
+        if (!MovieBoxPlaybackGuard.canInitiatePlayback(subjectId, slug)) return@withContext
         val isSeries = type.equals("tv", ignoreCase = true) || type.equals("tv-series", ignoreCase = true)
         val se = if (isSeries) season.coerceAtLeast(1) else 0
         val ep = if (isSeries) episode.coerceAtLeast(1) else 0
@@ -498,6 +592,10 @@ class MovieRepository(
                     )
                 )
 
+                val existing = dao.getHistory(subjectId)
+                val finalTmdbId = tmdbId ?: existing?.tmdbId
+                val finalTmdbMediaType = tmdbMediaType ?: existing?.tmdbMediaType
+
                 dao.upsertHistory(
                     WatchHistoryEntity(
                         subjectId = subjectId,
@@ -509,7 +607,9 @@ class MovieRepository(
                         positionMs = savePos,
                         durationMs = durationMs,
                         lastWatchedTimestamp = System.currentTimeMillis(),
-                        type = type
+                        type = type,
+                        tmdbId = finalTmdbId,
+                        tmdbMediaType = finalTmdbMediaType
                     )
                 )
             }
@@ -531,7 +631,7 @@ class MovieRepository(
     }
 
     suspend fun updateWatchlistPosterIfMissing(subjectId: String, posterUrl: String) = withContext(Dispatchers.IO) {
-        if (posterUrl.isBlank()) return@withContext
+        if (!MovieBoxPlaybackGuard.isValidMovieBoxSubjectId(subjectId) || posterUrl.isBlank()) return@withContext
         try {
             val existing = dao.getWatchlistItem(subjectId)
             if (existing != null && existing.posterUrl.isNullOrBlank()) {
@@ -541,7 +641,7 @@ class MovieRepository(
     }
 
     suspend fun updateHistoryPosterIfMissing(subjectId: String, posterUrl: String) = withContext(Dispatchers.IO) {
-        if (posterUrl.isBlank()) return@withContext
+        if (!MovieBoxPlaybackGuard.isValidMovieBoxSubjectId(subjectId) || posterUrl.isBlank()) return@withContext
         try {
             val existing = dao.getHistory(subjectId)
             if (existing != null && existing.posterUrl.isNullOrBlank()) {
@@ -553,10 +653,19 @@ class MovieRepository(
     // Local Watchlist
     val watchlist: Flow<List<WatchlistEntity>> = dao.getAllWatchlist()
 
-    fun isWatchlisted(subjectId: String): Flow<Boolean> = dao.isWatchlisted(subjectId)
+    fun isWatchlisted(subjectId: String): Flow<Boolean> {
+        if (!MovieBoxPlaybackGuard.isValidMovieBoxSubjectId(subjectId)) {
+            return kotlinx.coroutines.flow.flowOf(false)
+        }
+        return dao.isWatchlisted(subjectId)
+    }
+
+    fun isTmdbWatchlisted(tmdbId: Long, mediaType: String): Flow<Boolean> {
+        return dao.isTmdbWatchlisted(tmdbId, mediaType)
+    }
 
     suspend fun toggleWatchlist(
-        subjectId: String,
+        subjectId: String?,
         slug: String,
         title: String,
         posterUrl: String?,
@@ -564,15 +673,30 @@ class MovieRepository(
         year: String?,
         genre: String?,
         type: String?,
-        currentlyWatchlisted: Boolean
+        currentlyWatchlisted: Boolean,
+        tmdbId: Long? = null,
+        tmdbMediaType: String? = null,
+        tmdbOriginalTitle: String? = null,
+        tmdbCountry: String? = null,
+        tmdbOriginalLanguage: String? = null
     ) = withContext(Dispatchers.IO) {
+        val isTmdb = tmdbId != null && tmdbId > 0L
+        if (!isTmdb && !MovieBoxPlaybackGuard.canInitiatePlayback(subjectId, slug)) return@withContext
+
+        val id = if (isTmdb) "tmdb_${tmdbMediaType ?: "movie"}_$tmdbId" else (subjectId ?: slug)
         try {
             if (currentlyWatchlisted) {
-                dao.removeFromWatchlist(subjectId)
+                if (isTmdb) {
+                    dao.removeTmdbFromWatchlist(tmdbId, tmdbMediaType ?: "movie")
+                    dao.removeFromWatchlist(id)
+                } else if (!subjectId.isNullOrBlank()) {
+                    dao.removeFromWatchlist(subjectId)
+                }
             } else {
                 dao.addToWatchlist(
                     WatchlistEntity(
-                        subjectId = subjectId,
+                        id = id,
+                        subjectId = if (isTmdb) null else subjectId,
                         slug = slug,
                         title = title,
                         posterUrl = posterUrl,
@@ -580,7 +704,12 @@ class MovieRepository(
                         year = year,
                         genre = genre,
                         type = type,
-                        addedTimestamp = System.currentTimeMillis()
+                        addedTimestamp = System.currentTimeMillis(),
+                        tmdbId = tmdbId,
+                        tmdbMediaType = tmdbMediaType,
+                        tmdbOriginalTitle = tmdbOriginalTitle,
+                        tmdbCountry = tmdbCountry,
+                        tmdbOriginalLanguage = tmdbOriginalLanguage
                     )
                 )
             }

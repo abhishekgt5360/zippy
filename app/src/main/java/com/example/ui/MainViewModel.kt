@@ -19,8 +19,11 @@ import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import com.example.data.local.AppDatabase
 import com.example.data.local.WatchHistoryEntity
 import com.example.data.local.WatchlistEntity
+import com.example.data.local.toContentMatch
 import com.example.data.model.*
+import com.example.data.repository.ContentMatchingEngine
 import com.example.data.repository.MovieRepository
+import com.example.data.repository.TmdbRepository
 import com.example.util.AdultFilter
 import com.example.util.NollywoodFilter
 import com.example.util.PlaybackSession
@@ -100,7 +103,20 @@ data class DetailPlayerUiState(
     val session: PlaybackSession? = null,
     val isWatchlisted: Boolean = false,
     /** Shown once as a toast when a blocked title was tapped from a surface we cannot pre-filter. */
-    val blockedNotice: String? = null
+    val blockedNotice: String? = null,
+    val tmdbId: Long? = null,
+    val tmdbMediaType: String? = null,
+    val tmdbOriginalTitle: String? = null,
+    val releaseYear: String? = null,
+    val originalLanguage: String? = null,
+    val country: String? = null,
+    // Batch 2: Rich TMDB details and provider matching state
+    val tmdbDetail: TmdbDetailResponse? = null,
+    val isMatchingProvider: Boolean = false,
+    val isProviderAvailable: Boolean = false,
+    val providerMatchStatus: String? = null,
+    val directorName: String? = null,
+    val recommendations: List<MovieItem> = emptyList()
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -167,6 +183,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val database = AppDatabase.getInstance(application)
     private val repository = MovieRepository(database = database, context = application)
+    val matchingEngine = ContentMatchingEngine(movieRepository = repository, database = database)
+    val tmdbRepository = TmdbRepository()
 
     // Navigation state
     private val _currentTab = MutableStateFlow(AppTab.HOME)
@@ -384,8 +402,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return banner to cleanedSections
     }
 
-    fun loadHomeFeed() {
+    fun loadHomeFeed(forceRefresh: Boolean = false) {
         viewModelScope.launch {
+            if (forceRefresh) {
+                tmdbRepository.clearCache()
+            }
             // Only show full loading indicator if we don't already have cached content
             if (_homeState.value.sections.isEmpty()) {
                 val cachedHome = repository.getCachedHome()
@@ -409,6 +430,78 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
+            // ── TMDB Catalogue Sections (when configured) ────────────────────
+            if (tmdbRepository.isConfigured()) {
+                try {
+                    val genreMap = tmdbRepository.getGenreMap()
+                    val allowAdult = _isAdultEnabled.value
+
+                    val trendingMoviesDeferred = async { tmdbRepository.getTrending(mediaType = "movie", timeWindow = "week", page = 1, forceRefresh = forceRefresh) }
+                    val trendingTvDeferred = async { tmdbRepository.getTrending(mediaType = "tv", timeWindow = "week", page = 1, forceRefresh = forceRefresh) }
+                    val popularMoviesDeferred = async { tmdbRepository.getPopularMovies(page = 1, forceRefresh = forceRefresh) }
+                    val popularTvDeferred = async { tmdbRepository.getPopularTv(page = 1, forceRefresh = forceRefresh) }
+                    val topRatedMoviesDeferred = async { tmdbRepository.getTopRatedMovies(page = 1, forceRefresh = forceRefresh) }
+                    val topRatedTvDeferred = async { tmdbRepository.getTopRatedTv(page = 1, forceRefresh = forceRefresh) }
+                    val indianMoviesDeferred = async { tmdbRepository.getIndianMovies(page = 1, forceRefresh = forceRefresh) }
+                    val indianTvDeferred = async { tmdbRepository.getIndianTv(page = 1, forceRefresh = forceRefresh) }
+                    val upcomingMoviesDeferred = async { tmdbRepository.getUpcoming(page = 1, forceRefresh = forceRefresh) }
+
+                    val trendingMoviesRes = trendingMoviesDeferred.await().getOrNull()
+                    val trendingTvRes = trendingTvDeferred.await().getOrNull()
+                    val popularMoviesRes = popularMoviesDeferred.await().getOrNull()
+                    val popularTvRes = popularTvDeferred.await().getOrNull()
+                    val topRatedMoviesRes = topRatedMoviesDeferred.await().getOrNull()
+                    val topRatedTvRes = topRatedTvDeferred.await().getOrNull()
+                    val indianMoviesRes = indianMoviesDeferred.await().getOrNull()
+                    val indianTvRes = indianTvDeferred.await().getOrNull()
+                    val upcomingMoviesRes = upcomingMoviesDeferred.await().getOrNull()
+
+                    fun toSection(title: String, res: TmdbPagedResponse<TmdbMovieItem>?): HomeSection? {
+                        val items = res?.results.orEmpty()
+                            .filter { !it.isPerson }
+                            .map { it.toMovieItem(genreMap) }
+                        val filtered = filterHomeItems(items, allowAdult)
+                        return if (filtered.isNotEmpty()) {
+                            HomeSection(section = title, count = filtered.size, items = filtered)
+                        } else null
+                    }
+
+                    val sectionsList = listOfNotNull(
+                        toSection("Trending Movies", trendingMoviesRes),
+                        toSection("Trending TV Shows", trendingTvRes),
+                        toSection("Popular Movies", popularMoviesRes),
+                        toSection("Popular TV Shows", popularTvRes),
+                        toSection("Top Rated Movies", topRatedMoviesRes),
+                        toSection("Top Rated TV Shows", topRatedTvRes),
+                        toSection("Indian Movies", indianMoviesRes),
+                        toSection("Indian TV Shows", indianTvRes),
+                        toSection("Upcoming Releases", upcomingMoviesRes)
+                    )
+
+                    val banner = trendingMoviesRes?.results.orEmpty()
+                        .filter { !it.isPerson }
+                        .take(8)
+                        .map { it.toMovieItem(genreMap) }
+                        .let { filterHomeItems(it, allowAdult) }
+
+                    if (sectionsList.isNotEmpty()) {
+                        _homeState.update {
+                            it.copy(
+                                isLoading = false,
+                                bannerItems = banner,
+                                sections = sectionsList,
+                                errorMessage = null
+                            )
+                        }
+                        return@launch
+                    }
+                } catch (e: Exception) {
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    // Fall back to MovieBox below
+                }
+            }
+
+            // ── MovieBox Fallback Home Feed ──────────────────────────────────
             val homeDeferred = async { repository.getHome() }
             val bollyDeferred = async { repository.getBollywoodMovies() }
 
@@ -563,6 +656,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         loadCatalog(reset = true)
     }
 
+    /**
+     * Opens the catalog with a specific type, region preset and sort order.
+     * Supports TMDB discovery categories (Trending, Popular, Top Rated, Indian Movies/TV, etc.).
+     */
+    fun openCatalogCategory(
+        type: CatalogType = CatalogType.MOVIES,
+        presetId: String = RegionalCategoryConfig.PRESET_ALL,
+        sort: String = "foryou"
+    ) {
+        val isAnimation = type == CatalogType.ANIMATION
+        _catalogState.update {
+            it.copy(
+                type = type,
+                selectedPresetId = if (isAnimation) RegionalCategoryConfig.PRESET_ALL else presetId,
+                selectedSort = sort,
+                adultsOnly = false,
+                selectedYear = null,
+                selectedGenre = "All",
+                page = 1
+            )
+        }
+        loadCatalog(reset = true)
+        _currentTab.value = AppTab.CATALOG
+    }
+
     private fun catalogRequestSignature(state: CatalogUiState): String {
         val preset = RegionalCategoryConfig.presetById(state.selectedPresetId)
         val genre = if (state.adultsOnly) {
@@ -638,6 +756,113 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             var accumulated = if (reset) emptyList() else _catalogState.value.items
             var lastError: Throwable? = null
             var hasMore = true
+
+            // ── TMDB Catalog Discovery (when configured and not in adult-only mode) ──
+            if (tmdbRepository.isConfigured() && !snapshot.adultsOnly) {
+                try {
+                    val genreMap = tmdbRepository.getGenreMap()
+                    val isTv = snapshot.type == CatalogType.TV_SERIES
+                    val tmdbGenreId = if (genreParam != null && genreParam != "All") {
+                        genreMap.entries.firstOrNull { it.value.equals(genreParam, ignoreCase = true) }?.key
+                    } else null
+                    val yearInt = yearParam?.toIntOrNull()
+
+                    val tmdbSort = when (sortParam) {
+                        "hottest" -> "popularity.desc"
+                        "latest" -> if (isTv) "first_air_date.desc" else "primary_release_date.desc"
+                        "rating" -> "vote_average.desc"
+                        else -> "popularity.desc"
+                    }
+
+                    val tmdbResult = when {
+                        isAnimation -> {
+                            tmdbRepository.getAnime(page = pageToLoad)
+                        }
+                        preset.id == RegionalCategoryConfig.PRESET_INDIA -> {
+                            if (tmdbGenreId != null || yearInt != null) {
+                                tmdbRepository.discover(
+                                    isTv = isTv,
+                                    genreId = tmdbGenreId,
+                                    country = "IN",
+                                    year = yearInt,
+                                    sortBy = tmdbSort,
+                                    page = pageToLoad
+                                )
+                            } else if (isTv) {
+                                tmdbRepository.getIndianTv(page = pageToLoad)
+                            } else {
+                                tmdbRepository.getIndianMovies(page = pageToLoad)
+                            }
+                        }
+                        preset.id == RegionalCategoryConfig.PRESET_US_UK_CA_AU -> {
+                            tmdbRepository.discover(
+                                isTv = isTv,
+                                genreId = tmdbGenreId,
+                                country = "US|GB|CA|AU",
+                                year = yearInt,
+                                sortBy = tmdbSort,
+                                page = pageToLoad
+                            )
+                        }
+                        tmdbGenreId != null || yearInt != null -> {
+                            tmdbRepository.discover(
+                                isTv = isTv,
+                                genreId = tmdbGenreId,
+                                year = yearInt,
+                                sortBy = tmdbSort,
+                                page = pageToLoad
+                            )
+                        }
+                        sortParam == "hottest" -> {
+                            tmdbRepository.getTrending(
+                                mediaType = if (isTv) "tv" else "movie",
+                                timeWindow = "week",
+                                page = pageToLoad
+                            )
+                        }
+                        sortParam == "rating" -> {
+                            if (isTv) tmdbRepository.getTopRatedTv(page = pageToLoad)
+                            else tmdbRepository.getTopRatedMovies(page = pageToLoad)
+                        }
+                        sortParam == "latest" -> {
+                            if (isTv) tmdbRepository.discover(isTv = true, sortBy = "first_air_date.desc", page = pageToLoad)
+                            else tmdbRepository.getNowPlaying(page = pageToLoad)
+                        }
+                        else -> {
+                            if (isTv) tmdbRepository.getPopularTv(page = pageToLoad)
+                            else tmdbRepository.getPopularMovies(page = pageToLoad)
+                        }
+                    }
+
+                    if (catalogRequestSignature(_catalogState.value) != requestSignature) return@launch
+
+                    val tmdbResponse = tmdbResult.getOrNull()
+                    if (tmdbResponse != null) {
+                        val items = tmdbResponse.results
+                            .filter { !it.isPerson }
+                            .map { it.toMovieItem(genreMap) }
+                        val filtered = filterContent(items, _isAdultEnabled.value)
+                        accumulated = if (reset) filtered else (accumulated + filtered).distinctBy { it.uniqueItemKey }
+                        val more = (tmdbResponse.page ?: 1) < (tmdbResponse.totalPages ?: 1)
+
+                        _catalogState.update {
+                            it.copy(
+                                isLoading = false,
+                                items = accumulated,
+                                page = pageToLoad,
+                                hasMore = more,
+                                errorMessage = null
+                            )
+                        }
+                        return@launch
+                    }
+                } catch (e: Exception) {
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    // Fall back to MovieBox below
+                }
+            }
+
+            // ── MovieBox Catalog Fallback ────────────────────────────────────
             var hops = 0
             val maxHops = if (reset) 5 else 3
 
@@ -667,7 +892,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 accumulated = if (reset && hops == 1) {
                     filtered
                 } else {
-                    (accumulated + filtered).distinctBy { "${it.safeSlug}_${it.subjectId}" }
+                    (accumulated + filtered).distinctBy { it.uniqueItemKey }
                 }
                 hasMore = response.hasMore ?: response.items.isNotEmpty()
 
@@ -762,6 +987,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 return@launch
             }
 
+            // ── TMDB Multi-Search (when configured) ──────────────────────────
+            if (tmdbRepository.isConfigured()) {
+                try {
+                    val genreMap = tmdbRepository.getGenreMap()
+                    val tmdbResult = tmdbRepository.search(query = q, page = 1)
+                    if (_searchState.value.query != q) return@launch
+
+                    val tmdbResponse = tmdbResult.getOrNull()
+                    if (tmdbResponse != null) {
+                        val items = tmdbResponse.results
+                            .filter { !it.isPerson && it.isPlayableContent }
+                            .map { it.toMovieItem(genreMap) }
+                        val cleaned = filterContent(items, allowAdult)
+                        val uniqueResults = cleaned.distinctBy { it.uniqueItemKey }
+
+                        _searchState.update {
+                            it.copy(
+                                isSearching = false,
+                                results = uniqueResults,
+                                errorMessage = null
+                            )
+                        }
+                        return@launch
+                    }
+                } catch (e: Exception) {
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    // Fall back to MovieBox search below
+                }
+            }
+
+            // ── MovieBox Search Fallback ─────────────────────────────────────
             val result = repository.search(query = q, page = 1)
             val response = result.getOrNull()
             if (response == null) {
@@ -781,7 +1037,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val verified = if (allowAdult) cleaned else verifySuspiciousRows(cleaned)
             if (_searchState.value.query != q) return@launch
             _searchState.update {
-                it.copy(isSearching = false, results = verified, errorMessage = null)
+                it.copy(isSearching = false, results = verified.distinctBy { it.uniqueItemKey }, errorMessage = null)
             }
         }
     }
@@ -834,12 +1090,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return items.filterNot { keyOf(it) in blockedKeys }
     }
 
+    fun openDetail(item: MovieItem) {
+        openDetail(
+            slug = item.safeSlug,
+            subjectId = item.subjectId,
+            title = item.safeName,
+            initialType = item.type,
+            posterUrl = item.posterUrl,
+            tmdbId = item.tmdbId,
+            originalTitle = item.tmdbOriginalTitle,
+            releaseYear = item.year,
+            originalLanguage = item.tmdbOriginalLanguage ?: item.language,
+            country = item.tmdbCountry ?: item.country
+        )
+    }
+
     fun openDetail(
         slug: String,
         subjectId: String,
         title: String = "",
         initialType: String? = null,
-        posterUrl: String? = null
+        posterUrl: String? = null,
+        tmdbId: Long? = null,
+        originalTitle: String? = null,
+        releaseYear: String? = null,
+        originalLanguage: String? = null,
+        country: String? = null
     ) {
         // Library rows, deep links, and search hits can all reach a blocked title, so
         // gate before any detail state is published.
@@ -856,7 +1132,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
+        val effectiveTmdbId = tmdbId ?: MovieBoxPlaybackGuard.extractTmdbIdFromSlug(slug)
         val guessedSeries = initialType.equals("tv", ignoreCase = true) || initialType.equals("tv-series", ignoreCase = true)
+        val isMovieBoxSlug = MovieBoxPlaybackGuard.isValidMovieBoxSlug(slug)
+        val mediaType = if (slug.startsWith("tmdb_tv_", ignoreCase = true) || guessedSeries) "tv" else "movie"
+
         _detailPlayerState.value = DetailPlayerUiState(
             slug = slug,
             subjectId = subjectId,
@@ -865,17 +1145,162 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             isSeries = guessedSeries,
             selectedSeason = if (guessedSeries) 1 else 0,
             selectedEpisode = if (guessedSeries) 1 else 0,
-            isLoadingDetail = true
+            isLoadingDetail = isMovieBoxSlug && MovieBoxPlaybackGuard.canInitiatePlayback(subjectId, slug),
+            tmdbId = effectiveTmdbId,
+            tmdbMediaType = mediaType,
+            tmdbOriginalTitle = originalTitle,
+            releaseYear = releaseYear,
+            originalLanguage = originalLanguage,
+            country = country,
+            isMatchingProvider = effectiveTmdbId != null,
+            isProviderAvailable = false
         )
 
-        // Observe watchlist
-        viewModelScope.launch {
-            repository.isWatchlisted(subjectId).collectLatest { isWatchlisted ->
-                _detailPlayerState.update { it.copy(isWatchlisted = isWatchlisted) }
+        // Observe watchlist for TMDB items or MovieBox items
+        if (effectiveTmdbId != null) {
+            viewModelScope.launch {
+                repository.isTmdbWatchlisted(effectiveTmdbId, mediaType).collectLatest { isWatchlisted ->
+                    _detailPlayerState.update { it.copy(isWatchlisted = isWatchlisted) }
+                }
+            }
+        } else if (MovieBoxPlaybackGuard.isValidMovieBoxSubjectId(subjectId)) {
+            viewModelScope.launch {
+                repository.isWatchlisted(subjectId).collectLatest { isWatchlisted ->
+                    _detailPlayerState.update { it.copy(isWatchlisted = isWatchlisted) }
+                }
             }
         }
 
-        // Fetch detail
+        // Fetch rich TMDB details when TMDB ID is present
+        if (effectiveTmdbId != null && tmdbRepository.isConfigured()) {
+            viewModelScope.launch {
+                try {
+                    val genreMap = tmdbRepository.getGenreMap()
+                    val detailResult = if (mediaType == "tv") {
+                        tmdbRepository.getTvDetail(effectiveTmdbId)
+                    } else {
+                        tmdbRepository.getMovieDetail(effectiveTmdbId)
+                    }
+                    detailResult.onSuccess { tmdbRes ->
+                        val dir = tmdbRes.credits?.crew?.firstOrNull { it.job.equals("Director", ignoreCase = true) }?.name
+                        val recs = (tmdbRes.recommendations?.results.orEmpty() + tmdbRes.similar?.results.orEmpty())
+                            .filter { !it.isPerson && it.isPlayableContent }
+                            .distinctBy { it.id }
+                            .take(12)
+                            .map { it.toMovieItem(genreMap) }
+
+                        _detailPlayerState.update {
+                            it.copy(
+                                tmdbDetail = tmdbRes,
+                                directorName = dir,
+                                recommendations = recs,
+                                title = tmdbRes.safeTitle.ifBlank { it.title },
+                                posterUrl = tmdbRes.posterUrl() ?: it.posterUrl,
+                                releaseYear = tmdbRes.year ?: it.releaseYear,
+                                country = tmdbRes.originCountry?.firstOrNull() ?: it.country,
+                                originalLanguage = tmdbRes.originalLanguage ?: it.originalLanguage
+                            )
+                        }
+                    }
+                } catch (e: Exception) {
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                }
+            }
+        }
+
+        // CRITICAL GUARD: TMDB-generated slugs must NEVER be queried directly against MovieBox API!
+        // Instead, resolve genuine MovieBox provider mappings via ContentMatchingEngine.
+        if (!isMovieBoxSlug) {
+            if (effectiveTmdbId != null) {
+                viewModelScope.launch {
+                    try {
+                        val match = matchingEngine.getMapping(
+                            tmdbId = effectiveTmdbId,
+                            mediaType = mediaType,
+                            title = title,
+                            originalTitle = originalTitle ?: title,
+                            releaseYear = releaseYear,
+                            language = originalLanguage,
+                            country = country
+                        )
+                        if (match.isPlayable) {
+                            val verifiedSlug = match.movieboxDetailPath!!
+                            val verifiedSubjectId = match.movieboxSubjectId!!
+                            _detailPlayerState.update {
+                                it.copy(
+                                    slug = verifiedSlug,
+                                    subjectId = verifiedSubjectId,
+                                    isMatchingProvider = false,
+                                    isProviderAvailable = true,
+                                    providerMatchStatus = "VERIFIED",
+                                    isLoadingDetail = true
+                                )
+                            }
+                            fetchMovieBoxDetail(
+                                slug = verifiedSlug,
+                                subjectId = verifiedSubjectId,
+                                guessedSeries = guessedSeries,
+                                title = title,
+                                posterUrl = posterUrl
+                            )
+                        } else {
+                            _detailPlayerState.update {
+                                it.copy(
+                                    isLoadingDetail = false,
+                                    isMatchingProvider = false,
+                                    isProviderAvailable = false,
+                                    providerMatchStatus = match.matchStatus.name
+                                )
+                            }
+                        }
+                    } catch (e: Exception) {
+                        if (e is kotlinx.coroutines.CancellationException) throw e
+                        _detailPlayerState.update {
+                            it.copy(
+                                isLoadingDetail = false,
+                                isMatchingProvider = false,
+                                isProviderAvailable = false,
+                                providerMatchStatus = "ERROR"
+                            )
+                        }
+                    }
+                }
+            } else {
+                _detailPlayerState.update {
+                    it.copy(
+                        isLoadingDetail = false,
+                        isMatchingProvider = false,
+                        isProviderAvailable = false
+                    )
+                }
+            }
+            return
+        }
+
+        // Native MovieBox detail load
+        _detailPlayerState.update {
+            it.copy(
+                isMatchingProvider = false,
+                isProviderAvailable = true,
+                providerMatchStatus = "NATIVE_MOVIEBOX"
+            )
+        }
+        fetchMovieBoxDetail(
+            slug = slug,
+            subjectId = subjectId,
+            guessedSeries = guessedSeries,
+            title = title,
+            posterUrl = posterUrl
+        )
+    }
+
+    private fun fetchMovieBoxDetail(
+        slug: String,
+        subjectId: String,
+        guessedSeries: Boolean,
+        title: String,
+        posterUrl: String? = null
+    ) {
         viewModelScope.launch {
             val savedHistory = repository.getHistoryItem(subjectId)
             val prevPos = savedHistory?.positionMs ?: 0L
@@ -976,8 +1401,86 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         subjectId: String,
         season: Int = 0,
         episode: Int = 0,
-        resumePositionMs: Long? = null
+        resumePositionMs: Long? = null,
+        tmdbId: Long? = null,
+        originalTitle: String? = null,
+        releaseYear: String? = null,
+        originalLanguage: String? = null,
+        country: String? = null
     ) {
+        val effectiveTmdbId = tmdbId ?: _detailPlayerState.value.tmdbId ?: MovieBoxPlaybackGuard.extractTmdbIdFromSlug(slug)
+
+        // For TMDB-originated items: check mapping and require VERIFIED status + playable streams
+        if (effectiveTmdbId != null) {
+            _detailPlayerState.update {
+                it.copy(
+                    isPlaying = false,
+                    isLoadingStream = false,
+                    streamError = "This title is not currently available for streaming."
+                )
+            }
+            viewModelScope.launch {
+                val mediaType = if (slug.startsWith("tmdb_tv_", ignoreCase = true) || _detailPlayerState.value.isSeries) "tv" else "movie"
+                val effTitle = _detailPlayerState.value.title.ifBlank { "Unknown" }
+                val effOrigTitle = originalTitle ?: _detailPlayerState.value.tmdbOriginalTitle ?: effTitle
+                val effYear = releaseYear ?: _detailPlayerState.value.releaseYear
+                val effLang = originalLanguage ?: _detailPlayerState.value.originalLanguage
+                val effCountry = country ?: _detailPlayerState.value.country
+
+                val match = matchingEngine.getMapping(
+                    tmdbId = effectiveTmdbId,
+                    mediaType = mediaType,
+                    title = effTitle,
+                    originalTitle = effOrigTitle,
+                    releaseYear = effYear,
+                    language = effLang,
+                    country = effCountry
+                )
+                if (match.isPlayable) {
+                    val verifiedSubjectId = match.movieboxSubjectId!!
+                    val verifiedSlug = match.movieboxDetailPath!!
+                    _detailPlayerState.update {
+                        it.copy(
+                            slug = verifiedSlug,
+                            subjectId = verifiedSubjectId
+                        )
+                    }
+                    playItem(
+                        slug = verifiedSlug,
+                        subjectId = verifiedSubjectId,
+                        season = season,
+                        episode = episode,
+                        resumePositionMs = resumePositionMs,
+                        tmdbId = null
+                    )
+                } else {
+                    _detailPlayerState.update {
+                        it.copy(
+                            isPlaying = false,
+                            isLoadingStream = false,
+                            streamError = "This title is not currently available for streaming."
+                        )
+                    }
+                }
+            }
+            return
+        }
+
+        // CRITICAL PLAYBACK GUARD:
+        // A TMDB item without a verified MovieBox mapping must NEVER initiate MovieBox playback.
+        // An empty MovieBox subject ID must NEVER reach repository.getStream().
+        // A TMDB ID must NEVER be substituted for a MovieBox subject ID.
+        if (!MovieBoxPlaybackGuard.canInitiatePlayback(subjectId, slug, null)) {
+            _detailPlayerState.update {
+                it.copy(
+                    isPlaying = false,
+                    isLoadingStream = false,
+                    streamError = "This title is not currently available for streaming."
+                )
+            }
+            return
+        }
+
         viewModelScope.launch {
             val current = _detailPlayerState.value
             val isSeries = current.isSeries
@@ -1010,7 +1513,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     episode = oldSession.episode,
                     positionMs = player.currentPosition,
                     durationMs = player.duration,
-                    type = if (oldSession.isSeries) "tv" else "movie"
+                    type = if (oldSession.isSeries) "tv" else "movie",
+                    tmdbId = current.tmdbId,
+                    tmdbMediaType = if (oldSession.isSeries) "tv" else "movie"
                 )
             }
 
@@ -1080,24 +1585,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     suspend fun getStreamForDownload(subjectId: String, slug: String, season: Int, episode: Int): List<StreamSource> {
-        if (NollywoodFilter.isBlockedId(subjectId) || NollywoodFilter.isBlockedTitle(_detailPlayerState.value.title)) {
-            NollywoodFilter.learn(subjectId)
+        val effectiveTmdbId = MovieBoxPlaybackGuard.extractTmdbIdFromSlug(slug)
+        val (finalSubjectId, finalSlug) = if (effectiveTmdbId != null) {
+            val mediaType = if (slug.startsWith("tmdb_tv_", ignoreCase = true) || _detailPlayerState.value.isSeries) "tv" else "movie"
+            val match = database.watchDao().getMapping(effectiveTmdbId, mediaType)?.toContentMatch()
+            if (match != null && match.isPlayable) {
+                Pair(match.movieboxSubjectId!!, match.movieboxDetailPath!!)
+            } else {
+                return emptyList()
+            }
+        } else {
+            Pair(subjectId, slug)
+        }
+
+        if (!MovieBoxPlaybackGuard.canInitiatePlayback(finalSubjectId, finalSlug, null)) {
+            return emptyList()
+        }
+        if (NollywoodFilter.isBlockedId(finalSubjectId) || NollywoodFilter.isBlockedTitle(_detailPlayerState.value.title)) {
+            NollywoodFilter.learn(finalSubjectId)
             noticeBlocked(_detailPlayerState.value.title)
             return emptyList()
         }
         if (!_isAdultEnabled.value &&
             (AdultFilter.isAdultDetail(_detailPlayerState.value.detail?.data?.subject) ||
-                AdultFilter.isAdultId(subjectId) ||
+                AdultFilter.isAdultId(finalSubjectId) ||
                 AdultFilter.isAdultTitle(_detailPlayerState.value.title))
         ) {
-            AdultFilter.learn(subjectId)
+            AdultFilter.learn(finalSubjectId)
             noticeBlocked(_detailPlayerState.value.title)
             return emptyList()
         }
         val isSeries = _detailPlayerState.value.isSeries
         val s = if (isSeries) season.coerceAtLeast(1) else 0
         val e = if (isSeries) episode.coerceAtLeast(1) else 0
-        return repository.getStream(subjectId, slug, s, e, isSeries = isSeries).getOrNull()?.sources.orEmpty()
+        val allSources = repository.getStream(finalSubjectId, finalSlug, s, e, isSeries = isSeries).getOrNull()?.sources.orEmpty()
+        val progressive = allSources.filter { it.isDownloadable }
+        return if (progressive.isNotEmpty()) progressive else allSources.filter { !it.url.contains(".m3u8", ignoreCase = true) && !it.url.contains(".mpd", ignoreCase = true) }
     }
 
     fun selectEpisode(season: Int, episode: Int) {
@@ -1123,6 +1646,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val season = s.session?.season ?: s.selectedSeason
         val episode = s.session?.episode ?: s.selectedEpisode
 
+        val effTmdbId = s.tmdbId ?: MovieBoxPlaybackGuard.extractTmdbIdFromSlug(slug)
         viewModelScope.launch {
             repository.saveWatchProgress(
                 subjectId = subId,
@@ -1133,26 +1657,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 episode = episode,
                 positionMs = posMs,
                 durationMs = durMs,
-                type = type
+                type = type,
+                tmdbId = effTmdbId,
+                tmdbMediaType = type
             )
         }
     }
 
     fun toggleWatchlist() {
         val s = _detailPlayerState.value
-        val subId = s.subjectId ?: return
-        val slug = s.slug ?: return
+        val isTmdb = s.tmdbId != null && s.tmdbId > 0L
+        val subId = s.subjectId
+        val slug = s.slug ?: if (isTmdb) "tmdb_${s.tmdbMediaType ?: "movie"}_${s.tmdbId}" else return
         val subject = s.detail?.data?.subject
-        val title = s.title.ifBlank { subject?.title ?: "Movie" }
-        val poster = s.posterUrl?.takeIf { it.isNotBlank() } ?: subject?.cover?.url
-        val rating = subject?.imdbRatingValue
-        val year = subject?.releaseDate?.take(4)
-        val genre = subject?.genre
+        val tmdb = s.tmdbDetail
+        val title = s.title.ifBlank { tmdb?.safeTitle ?: subject?.title ?: "Movie" }
+        val poster = s.posterUrl?.takeIf { it.isNotBlank() } ?: tmdb?.posterUrl() ?: subject?.cover?.url
+        val rating = tmdb?.ratingString ?: subject?.imdbRatingValue
+        val year = s.releaseYear ?: tmdb?.year ?: subject?.releaseDate?.take(4)
+        val genre = tmdb?.genres?.firstOrNull()?.name ?: subject?.genre
         val type = if (s.isSeries) "tv" else "movie"
 
         viewModelScope.launch {
             repository.toggleWatchlist(
-                subjectId = subId,
+                subjectId = if (isTmdb) null else subId,
                 slug = slug,
                 title = title,
                 posterUrl = poster,
@@ -1160,7 +1688,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 year = year,
                 genre = genre,
                 type = type,
-                currentlyWatchlisted = s.isWatchlisted
+                currentlyWatchlisted = s.isWatchlisted,
+                tmdbId = s.tmdbId,
+                tmdbMediaType = s.tmdbMediaType,
+                tmdbOriginalTitle = s.tmdbOriginalTitle ?: tmdb?.safeOriginalTitle,
+                tmdbCountry = s.country ?: tmdb?.originCountry?.firstOrNull(),
+                tmdbOriginalLanguage = s.originalLanguage ?: tmdb?.originalLanguage
             )
         }
     }
@@ -1191,6 +1724,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
+        matchingEngine.cancel()
         playerInstance?.release()
         playerInstance = null
     }
