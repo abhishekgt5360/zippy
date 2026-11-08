@@ -120,11 +120,17 @@ class ContentMatchingEngine(
 
             // Remove noise tags like (Movie), [Hindi], 4K, 1080p, Season 1, etc.
             val noiseCleaned = romanReplaced
-                .replace("\\((movie|dubbed|sub|subbed|hindi|dual audio)\\)".toRegex(), "")
-                .replace("\\[(hindi|english|4k|1080p|720p)\\]".toRegex(), "")
+                .replace("\\[.*?\\]".toRegex(), "")
+                .replace("\\((movie|dubbed|sub|subbed|hindi|tamil|telugu|kannada|malayalam|bengali|marathi|english|dual audio|complete|4k|1080p|720p|hd|uhd)\\)".toRegex(), "")
+                .replace("\\((19|20)\\d{2}\\)".toRegex(), "")
+                .replace("\\b(s|season)\\s*\\d+(\\s*-\\s*(s|season)?\\s*\\d+)?\\b".toRegex(), "")
+                .replace("\\b(part|pt|vol|volume)\\s*\\d+\\b".toRegex(), "")
+
+            // Remove apostrophes so possessives and contractions match consistently (e.g. "Grey's" -> "greys")
+            val apostropheCleaned = noiseCleaned.replace("'", "")
 
             // Strip all non-alphanumeric characters except single whitespace
-            return noiseCleaned
+            return apostropheCleaned
                 .replace("[^a-z0-9\\s]".toRegex(), " ")
                 .replace("\\s+".toRegex(), " ")
                 .trim()
@@ -175,10 +181,23 @@ class ContentMatchingEngine(
             tmdbLanguage: String? = null,
             tmdbCountry: String? = null
         ): Float {
-            // 1. Media type verification: strict check
-            val candIsTv = candidate.isTvSeries
-            if (tmdbIsTv != candIsTv) {
-                return 0.0f // Mismatch between movie and TV series -> reject!
+            // 1. Media type verification
+            val candType = candidate.type
+            if (!candType.isNullOrBlank()) {
+                val candIsTv = candidate.isTvSeries
+                if (tmdbIsTv != candIsTv) {
+                    return 0.0f // Explicit type mismatch -> reject!
+                }
+            } else {
+                // If type is omitted by API, check if candidate contains explicit contradictory cues
+                if (candidate.isTvSeries && !tmdbIsTv) {
+                    return 0.0f // Candidate has season/series markers, but TMDB item is a movie -> reject
+                }
+                val n = candidate.safeName.lowercase(Locale.ROOT)
+                val isExplicitMovie = n.contains(Regex("""\b(movie|film)\b"""))
+                if (isExplicitMovie && tmdbIsTv) {
+                    return 0.0f // Candidate explicitly named as a movie, but TMDB item is TV -> reject
+                }
             }
 
             // 2. Title similarity
@@ -197,12 +216,14 @@ class ContentMatchingEngine(
             val yearScore: Float = when {
                 tmdbYearInt != null && candYearInt != null -> {
                     val diff = abs(tmdbYearInt - candYearInt)
-                    when (diff) {
-                        0 -> 1.0f
-                        1 -> 0.60f // 1-year diff permitted for candidate selection, but constrained
+                    when {
+                        diff == 0 -> 1.0f
+                        diff == 1 -> if (tmdbIsTv) 0.90f else 0.60f
+                        tmdbIsTv && candYearInt >= tmdbYearInt -> 0.85f // For TV series, candidate season aired in later year
                         else -> 0.0f // >1 year diff -> different film or remake -> reject!
                     }
                 }
+                tmdbIsTv -> 0.70f // TV series often lack release year in catalog
                 else -> 0.25f // Missing release year is NOT strong positive evidence
             }
 
@@ -211,22 +232,85 @@ class ContentMatchingEngine(
             // 4. Language / Country bonus / penalty if available
             var metaAdjustment = 0.0f
             if (!candidate.language.isNullOrBlank() && !tmdbLanguage.isNullOrBlank()) {
-                if (candidate.language.equals(tmdbLanguage, ignoreCase = true)) {
+                if (matchesLanguage(candidate.language, tmdbLanguage)) {
                     metaAdjustment += 0.05f
                 } else {
                     metaAdjustment -= 0.20f // Language mismatch penalty
                 }
             }
             if (!candidate.country.isNullOrBlank() && !tmdbCountry.isNullOrBlank()) {
-                if (candidate.country.equals(tmdbCountry, ignoreCase = true)) {
+                if (matchesCountry(candidate.country, tmdbCountry)) {
                     metaAdjustment += 0.05f
                 } else {
+                    metaAdjustment -= 0.15f
+                }
+            }
+            // Title dub-tag penalty: if candidate name contains dub tag (e.g. [Hindi], (Hindi), [Tamil], [Dubbed])
+            // and TMDB original language does not match that tag, penalize so original release is prioritized
+            val candNameLower = candidate.safeName.lowercase(Locale.ROOT)
+            val dubPattern = Regex("""(\[(hindi|tamil|telugu|kannada|malayalam|bengali|marathi|dubbed|dub|dual audio)\]|\((hindi|tamil|telugu|kannada|malayalam|bengali|marathi|dubbed|dub|dual audio)\)|\b(hindi|tamil|telugu|kannada|malayalam|bengali|marathi|dubbed|dual audio)\b)""")
+            val isDubbedCand = candNameLower.contains(dubPattern)
+            if (isDubbedCand) {
+                val matchesLang = !tmdbLanguage.isNullOrBlank() && (
+                    candNameLower.contains("[$tmdbLanguage]") ||
+                    candNameLower.contains("($tmdbLanguage)") ||
+                    matchesLanguage(candNameLower, tmdbLanguage)
+                )
+                if (!matchesLang) {
                     metaAdjustment -= 0.15f
                 }
             }
 
             val baseScore = (effectiveTitleSim * 0.70f) + (yearScore * 0.30f)
             return (baseScore + metaAdjustment).coerceIn(0.0f, 1.0f)
+        }
+
+        fun matchesLanguage(candLang: String?, tmdbLang: String?): Boolean {
+            if (candLang.isNullOrBlank() || tmdbLang.isNullOrBlank()) return false
+            val c = candLang.trim().lowercase(Locale.ROOT)
+            val t = tmdbLang.trim().lowercase(Locale.ROOT)
+            if (c == t) return true
+            val isoMap = mapOf(
+                "en" to "english",
+                "hi" to "hindi",
+                "es" to "spanish",
+                "fr" to "french",
+                "de" to "german",
+                "it" to "italian",
+                "ja" to "japanese",
+                "ko" to "korean",
+                "zh" to "chinese",
+                "ru" to "russian",
+                "pt" to "portuguese",
+                "ta" to "tamil",
+                "te" to "telugu"
+            )
+            val normC = isoMap[c] ?: c
+            val normT = isoMap[t] ?: t
+            return normC == normT || normC.startsWith(normT) || normT.startsWith(normC)
+        }
+
+        fun matchesCountry(candCountry: String?, tmdbCountry: String?): Boolean {
+            if (candCountry.isNullOrBlank() || tmdbCountry.isNullOrBlank()) return false
+            val c = candCountry.trim().lowercase(Locale.ROOT)
+            val t = tmdbCountry.trim().lowercase(Locale.ROOT)
+            if (c == t) return true
+            val countryMap = mapOf(
+                "us" to "united states",
+                "in" to "india",
+                "gb" to "united kingdom",
+                "uk" to "united kingdom",
+                "ca" to "canada",
+                "fr" to "france",
+                "de" to "germany",
+                "jp" to "japan",
+                "kr" to "south korea",
+                "cn" to "china",
+                "au" to "australia"
+            )
+            val normC = countryMap[c] ?: c
+            val normT = countryMap[t] ?: t
+            return normC == normT || normC.startsWith(normT) || normT.startsWith(normC)
         }
     }
 
@@ -460,11 +544,16 @@ class ContentMatchingEngine(
         val isTv = mediaType.equals("tv", ignoreCase = true)
         val now = System.currentTimeMillis()
 
-        // 1. Search MovieBox using planned queries: display title, original title (if distinct), and title+year
+        // 1. Search MovieBox using planned queries: display title, original title (if distinct), unpunctuated title, and title+year
         val plannedQueries = mutableListOf<String>()
         plannedQueries.add(title)
         if (originalTitle.isNotBlank() && !originalTitle.equals(title, ignoreCase = true)) {
             plannedQueries.add(originalTitle)
+        }
+        val unpunctuatedTitle = title.replace("'", "").replace("&", "and").replace(":", " ").replace("-", " ")
+            .replace("\\s+".toRegex(), " ").trim()
+        if (unpunctuatedTitle.isNotBlank() && !unpunctuatedTitle.equals(title, ignoreCase = true)) {
+            plannedQueries.add(unpunctuatedTitle)
         }
         if (!releaseYear.isNullOrBlank()) {
             plannedQueries.add("$title $releaseYear")
@@ -474,11 +563,23 @@ class ContentMatchingEngine(
         val allCandidates = mutableListOf<MovieItem>()
 
         for (q in plannedQueries) {
+            android.util.Log.d(
+                "ZippyPlayback",
+                "[MOVIEBOX_SEARCH_START] endpoint='/search', query='$q', tmdbId=$tmdbId, mediaType='$mediaType', page=1"
+            )
             val res = movieRepository.search(q, page = 1)
             if (res.isFailure) {
                 anySearchFailed = true
+                android.util.Log.w(
+                    "ZippyPlayback",
+                    "[MOVIEBOX_SEARCH_FAILURE] endpoint='/search', query='$q', error='${res.exceptionOrNull()?.message}'"
+                )
             } else {
                 val items = res.getOrNull()?.items.orEmpty()
+                android.util.Log.d(
+                    "ZippyPlayback",
+                    "[MOVIEBOX_SEARCH_SUCCESS] endpoint='/search', query='$q', resultsCount=${items.size}"
+                )
                 allCandidates.addAll(items)
             }
         }
@@ -539,7 +640,37 @@ class ContentMatchingEngine(
             )
             candidate to score
         }.filter { it.second >= 0.55f }
-         .sortedByDescending { it.second }
+         .sortedWith(
+             compareByDescending<Pair<MovieItem, Float>> { it.second }
+                 .thenByDescending { pair ->
+                     // Prefer non-dubbed releases unless the requested language matches the dub tag
+                     val name = pair.first.safeName.lowercase(Locale.ROOT)
+                     val isDubTag = name.contains(Regex("""(\[(hindi|tamil|telugu|kannada|malayalam|bengali|marathi|dubbed|dub)\]|\((hindi|tamil|telugu|kannada|malayalam|bengali|marathi|dubbed|dub)\)|\b(hindi|tamil|telugu|kannada|malayalam|bengali|marathi|dubbed)\b)"""))
+                     val isTargetDub = !language.isNullOrBlank() && (name.contains("[$language]", ignoreCase = true) || name.contains("($language)", ignoreCase = true))
+                     if (!isDubTag || isTargetDub) 1 else 0
+                 }
+                 .thenByDescending { pair ->
+                     if (isTv) {
+                         val name = pair.first.safeName.lowercase(Locale.ROOT)
+                         when {
+                             name.contains("s1-") || name.contains("season 1-") -> 3
+                             name.contains("s1") || name.contains("season 1") -> 2
+                             else -> 1
+                         }
+                     } else 0
+                 }
+         )
+
+        android.util.Log.d(
+            "ZippyPlayback",
+            "Discovered ${distinctCandidates.size} distinct candidates, ${scoredCandidates.size} passed threshold (>=0.55):"
+        )
+        scoredCandidates.forEachIndexed { idx, (cand, score) ->
+            android.util.Log.d(
+                "ZippyPlayback",
+                "  Candidate #$idx: sid='${cand.subjectId}', name='${cand.safeName}', year='${cand.year}', score=$score, slug='${cand.safeSlug}'"
+            )
+        }
 
         val topCandidate = scoredCandidates.firstOrNull()
 
@@ -561,31 +692,86 @@ class ContentMatchingEngine(
             return notFound
         }
 
-        val bestItem = topCandidate.first
-        val bestScore = topCandidate.second
+        var bestItem = topCandidate.first
+        var bestScore = topCandidate.second
+        var bestPreProbed: StreamProbeResult? = null
 
-        // 4. Ambiguity Check: If multiple distinct provider records have equally strong evidence, return NEEDS_REVIEW.
-        // Never select arbitrarily among candidates with close scores (margin < 0.06).
+        // 4. Ambiguity Check: If multiple distinct provider records have equally strong evidence,
+        // resolve by verifying genuine stream resource availability rather than blindly assuming
+        // hollow placeholder stubs constitute a conflict with an active playable release.
         if (scoredCandidates.size >= 2) {
             val secondScore = scoredCandidates[1].second
-            if (abs(bestScore - secondScore) < 0.06f) {
-                val needsReview = ContentMatch(
-                    tmdbId = tmdbId,
-                    tmdbMediaType = mediaType,
-                    tmdbTitle = title,
-                    tmdbOriginalTitle = originalTitle,
-                    releaseYear = releaseYear,
-                    movieboxSubjectId = bestItem.subjectId,
-                    movieboxDetailPath = bestItem.safeSlug,
-                    matchStatus = MatchStatus.NEEDS_REVIEW,
-                    matchConfidence = bestScore,
-                    matchedAt = now,
-                    lastCheckedAt = now,
-                    expiresAt = now + ContentMatch.EXPIRY_NEEDS_REVIEW_MS,
-                    hasAvailableStreams = false
-                )
-                dao.upsertMapping(needsReview.toEntity())
-                return needsReview
+            val closeCandidates = scoredCandidates.filter { abs(it.second - bestScore) < 0.06f }
+            if (closeCandidates.size >= 2) {
+                if (isTv) {
+                    val normBest = normalizeTitle(bestItem.safeName)
+                    val normSecond = normalizeTitle(scoredCandidates[1].first.safeName)
+                    val isAmbiguous = normBest.isEmpty() || normBest != normSecond
+                    if (isAmbiguous) {
+                        android.util.Log.d(
+                            "ZippyPlayback",
+                            "[MOVIEBOX_AMBIGUOUS_REJECT] bestScore=$bestScore ('${bestItem.safeName}'), secondScore=$secondScore ('${scoredCandidates[1].first.safeName}'), diff=${abs(bestScore - secondScore)}"
+                        )
+                        val needsReview = ContentMatch(
+                            tmdbId = tmdbId,
+                            tmdbMediaType = mediaType,
+                            tmdbTitle = title,
+                            tmdbOriginalTitle = originalTitle,
+                            releaseYear = releaseYear,
+                            movieboxSubjectId = bestItem.subjectId,
+                            movieboxDetailPath = bestItem.safeSlug,
+                            matchStatus = MatchStatus.NEEDS_REVIEW,
+                            matchConfidence = bestScore,
+                            matchedAt = now,
+                            lastCheckedAt = now,
+                            expiresAt = now + ContentMatch.EXPIRY_NEEDS_REVIEW_MS,
+                            hasAvailableStreams = false
+                        )
+                        dao.upsertMapping(needsReview.toEntity())
+                        return needsReview
+                    }
+                } else {
+                    // For movies: Check if only ONE of the competing candidates actually has available streams.
+                    // This resolves cases where unstreamable placeholder records (e.g. UGC entries with 0 sources)
+                    // create false ambiguity conflicts with genuine playable releases (e.g. The Odyssey 2026).
+                    val probes = closeCandidates.take(3).map { candidate ->
+                        candidate to probeStreamAvailability(candidate.first.subjectId, candidate.first.safeSlug, isTv = false)
+                    }
+                    val availableList = probes.filter { it.second is StreamProbeResult.Available }
+
+                    if (availableList.size == 1) {
+                        val winner = availableList.first()
+                        bestItem = winner.first.first
+                        bestScore = winner.first.second
+                        bestPreProbed = winner.second
+                        android.util.Log.d(
+                            "ZippyPlayback",
+                            "[MOVIEBOX_AMBIGUITY_RESOLVED] Single playable candidate selected among ${closeCandidates.size} close matches: sid='${bestItem.subjectId}', name='${bestItem.safeName}'"
+                        )
+                    } else {
+                        android.util.Log.d(
+                            "ZippyPlayback",
+                            "[MOVIEBOX_AMBIGUOUS_REJECT] bestScore=$bestScore ('${bestItem.safeName}'), secondScore=$secondScore ('${scoredCandidates[1].first.safeName}'), availableCount=${availableList.size}, diff=${abs(bestScore - secondScore)}"
+                        )
+                        val needsReview = ContentMatch(
+                            tmdbId = tmdbId,
+                            tmdbMediaType = mediaType,
+                            tmdbTitle = title,
+                            tmdbOriginalTitle = originalTitle,
+                            releaseYear = releaseYear,
+                            movieboxSubjectId = bestItem.subjectId,
+                            movieboxDetailPath = bestItem.safeSlug,
+                            matchStatus = MatchStatus.NEEDS_REVIEW,
+                            matchConfidence = bestScore,
+                            matchedAt = now,
+                            lastCheckedAt = now,
+                            expiresAt = now + ContentMatch.EXPIRY_NEEDS_REVIEW_MS,
+                            hasAvailableStreams = false
+                        )
+                        dao.upsertMapping(needsReview.toEntity())
+                        return needsReview
+                    }
+                }
             }
         }
 
@@ -599,6 +785,10 @@ class ContentMatchingEngine(
             (normCandTitle == normTmdbTitle || (normTmdbOrigTitle.isNotEmpty() && normCandTitle == normTmdbOrigTitle))
 
         if (!isExactCandTitle) {
+            android.util.Log.d(
+                "ZippyPlayback",
+                "[MOVIEBOX_TITLE_REJECT] normCandTitle='$normCandTitle' does not match normTmdbTitle='$normTmdbTitle' or normTmdbOrigTitle='$normTmdbOrigTitle'"
+            )
             val needsReview = ContentMatch(
                 tmdbId = tmdbId,
                 tmdbMediaType = mediaType,
@@ -619,69 +809,109 @@ class ContentMatchingEngine(
         }
 
         // 6. Release Year Verification on Candidate:
-        // Exact release year required for automatic verification.
-        // One-year release differences must remain NEEDS_REVIEW (language/country alone are insufficient).
-        // Missing release year must yield NEEDS_REVIEW.
+        // Exact release year required for automatic verification of movies.
+        // For TV series, candidate year can reflect subsequent season air years (>= tmdbYearInt - 1).
         val tmdbYearInt = releaseYear?.toIntOrNull()
         val candYearInt = bestItem.year?.toIntOrNull()
 
-        if (tmdbYearInt == null || candYearInt == null) {
-            val needsReview = ContentMatch(
-                tmdbId = tmdbId,
-                tmdbMediaType = mediaType,
-                tmdbTitle = title,
-                tmdbOriginalTitle = originalTitle,
-                releaseYear = releaseYear,
-                movieboxSubjectId = bestItem.subjectId,
-                movieboxDetailPath = bestItem.safeSlug,
-                matchStatus = MatchStatus.NEEDS_REVIEW,
-                matchConfidence = bestScore,
-                matchedAt = now,
-                lastCheckedAt = now,
-                expiresAt = now + ContentMatch.EXPIRY_NEEDS_REVIEW_MS,
-                hasAvailableStreams = false
-            )
-            dao.upsertMapping(needsReview.toEntity())
-            return needsReview
-        }
-
-        val candYearDiff = abs(tmdbYearInt - candYearInt)
-        if (candYearDiff == 1) {
-            val needsReview = ContentMatch(
-                tmdbId = tmdbId,
-                tmdbMediaType = mediaType,
-                tmdbTitle = title,
-                tmdbOriginalTitle = originalTitle,
-                releaseYear = releaseYear,
-                movieboxSubjectId = bestItem.subjectId,
-                movieboxDetailPath = bestItem.safeSlug,
-                matchStatus = MatchStatus.NEEDS_REVIEW,
-                matchConfidence = bestScore,
-                matchedAt = now,
-                lastCheckedAt = now,
-                expiresAt = now + ContentMatch.EXPIRY_NEEDS_REVIEW_MS,
-                hasAvailableStreams = false
-            )
-            dao.upsertMapping(needsReview.toEntity())
-            return needsReview
-        } else if (candYearDiff > 1) {
-            val notFound = ContentMatch(
-                tmdbId = tmdbId,
-                tmdbMediaType = mediaType,
-                tmdbTitle = title,
-                tmdbOriginalTitle = originalTitle,
-                releaseYear = releaseYear,
-                matchStatus = MatchStatus.NOT_FOUND,
-                matchConfidence = 0.0f,
-                matchedAt = now,
-                lastCheckedAt = now,
-                expiresAt = now + ContentMatch.EXPIRY_NOT_FOUND_MS
-            )
-            dao.upsertMapping(notFound.toEntity())
-            return notFound
+        if (!isTv) {
+            if (tmdbYearInt == null || candYearInt == null) {
+                // If candidate title is an exact normalized match to TMDB,
+                // do not prematurely abort to NEEDS_REVIEW when search results omit the year.
+                // Allow Step 7 to fetch detail and let Step 11 verify detail release year.
+                if (!isExactCandTitle || tmdbYearInt == null) {
+                    android.util.Log.d(
+                        "ZippyPlayback",
+                        "[MOVIEBOX_YEAR_REJECT] tmdbYearInt=$tmdbYearInt, candYearInt=$candYearInt, isExactCandTitle=$isExactCandTitle"
+                    )
+                    val needsReview = ContentMatch(
+                        tmdbId = tmdbId,
+                        tmdbMediaType = mediaType,
+                        tmdbTitle = title,
+                        tmdbOriginalTitle = originalTitle,
+                        releaseYear = releaseYear,
+                        movieboxSubjectId = bestItem.subjectId,
+                        movieboxDetailPath = bestItem.safeSlug,
+                        matchStatus = MatchStatus.NEEDS_REVIEW,
+                        matchConfidence = bestScore,
+                        matchedAt = now,
+                        lastCheckedAt = now,
+                        expiresAt = now + ContentMatch.EXPIRY_NEEDS_REVIEW_MS,
+                        hasAvailableStreams = false
+                    )
+                    dao.upsertMapping(needsReview.toEntity())
+                    return needsReview
+                }
+            } else {
+                val candYearDiff = abs(tmdbYearInt - candYearInt)
+                if (candYearDiff == 1) {
+                    android.util.Log.d(
+                        "ZippyPlayback",
+                        "[MOVIEBOX_YEAR_DIFF_REJECT] tmdbYearInt=$tmdbYearInt, candYearInt=$candYearInt, diff=$candYearDiff"
+                    )
+                    val needsReview = ContentMatch(
+                        tmdbId = tmdbId,
+                        tmdbMediaType = mediaType,
+                        tmdbTitle = title,
+                        tmdbOriginalTitle = originalTitle,
+                        releaseYear = releaseYear,
+                        movieboxSubjectId = bestItem.subjectId,
+                        movieboxDetailPath = bestItem.safeSlug,
+                        matchStatus = MatchStatus.NEEDS_REVIEW,
+                        matchConfidence = bestScore,
+                        matchedAt = now,
+                        lastCheckedAt = now,
+                        expiresAt = now + ContentMatch.EXPIRY_NEEDS_REVIEW_MS,
+                        hasAvailableStreams = false
+                    )
+                    dao.upsertMapping(needsReview.toEntity())
+                    return needsReview
+                } else if (candYearDiff > 1) {
+                    android.util.Log.d(
+                        "ZippyPlayback",
+                        "[MOVIEBOX_YEAR_NOT_FOUND] tmdbYearInt=$tmdbYearInt, candYearInt=$candYearInt, diff=$candYearDiff"
+                    )
+                    val notFound = ContentMatch(
+                        tmdbId = tmdbId,
+                        tmdbMediaType = mediaType,
+                        tmdbTitle = title,
+                        tmdbOriginalTitle = originalTitle,
+                        releaseYear = releaseYear,
+                        matchStatus = MatchStatus.NOT_FOUND,
+                        matchConfidence = 0.0f,
+                        matchedAt = now,
+                        lastCheckedAt = now,
+                        expiresAt = now + ContentMatch.EXPIRY_NOT_FOUND_MS
+                    )
+                    dao.upsertMapping(notFound.toEntity())
+                    return notFound
+                }
+            }
+        } else {
+            // For TV series: reject if candidate aired prior to the TV series premiere
+            if (tmdbYearInt != null && candYearInt != null && candYearInt < tmdbYearInt - 1) {
+                val notFound = ContentMatch(
+                    tmdbId = tmdbId,
+                    tmdbMediaType = mediaType,
+                    tmdbTitle = title,
+                    tmdbOriginalTitle = originalTitle,
+                    releaseYear = releaseYear,
+                    matchStatus = MatchStatus.NOT_FOUND,
+                    matchConfidence = 0.0f,
+                    matchedAt = now,
+                    lastCheckedAt = now,
+                    expiresAt = now + ContentMatch.EXPIRY_NOT_FOUND_MS
+                )
+                dao.upsertMapping(notFound.toEntity())
+                return notFound
+            }
         }
 
         // 7. Verify Candidate via MovieBox Detail API
+        android.util.Log.d(
+            "ZippyPlayback",
+            "[MOVIEBOX_DETAIL_REQUEST] endpoint='/detail/${bestItem.safeSlug}', subjectId='${bestItem.subjectId}'"
+        )
         val detailRes = movieRepository.getDetail(bestItem.safeSlug)
         if (detailRes.isFailure) {
             // Network timeout / HTTP error on detail -> temporary state, do not cache as NOT_FOUND
@@ -701,6 +931,12 @@ class ContentMatchingEngine(
 
         val detailResponse = detailRes.getOrNull()
         val subject = detailResponse?.data?.subject
+        if (subject != null) {
+            android.util.Log.d(
+                "ZippyPlayback",
+                "[MOVIEBOX_DETAIL_SUCCESS] endpoint='/detail/${bestItem.safeSlug}', subjectId='${subject.subjectId}', title='${subject.title}', type=${subject.subjectType}, releaseDate='${subject.releaseDate}'"
+            )
+        }
         if (subject == null) {
             val needsReview = ContentMatch(
                 tmdbId = tmdbId,
@@ -799,9 +1035,16 @@ class ContentMatchingEngine(
         }
 
         // 11. TASK 5: Verify Release Year Using Detail Data
-        // Detail release year must not be missing and must not contradict TMDB release year.
+        // For movies: detail release year must not be missing and must not contradict TMDB release year.
+        // For TV series: detail releaseDate is frequently omitted in MovieBox; if present, must not precede series debut.
         val detailYearInt = subject.releaseDate?.take(4)?.toIntOrNull()
-        if (detailYearInt == null || detailYearInt != tmdbYearInt) {
+        val detailYearInvalid = if (!isTv) {
+            detailYearInt == null || detailYearInt != tmdbYearInt
+        } else {
+            detailYearInt != null && tmdbYearInt != null && detailYearInt < tmdbYearInt - 1
+        }
+
+        if (detailYearInvalid) {
             val needsReview = ContentMatch(
                 tmdbId = tmdbId,
                 tmdbMediaType = mediaType,
@@ -822,7 +1065,7 @@ class ContentMatchingEngine(
         }
 
         // 12. Identity Verification Passed! Probe Provider Stream Availability (All formats: sources, HLS, DASH)
-        val probeResult = probeStreamAvailability(searchSubjectId, bestItem.safeSlug, isTv)
+        val probeResult = bestPreProbed ?: probeStreamAvailability(searchSubjectId, bestItem.safeSlug, isTv)
         val matchCacheKey = "${mediaType.lowercase(Locale.ROOT)}_$tmdbId"
         val (hasStreams, availabilityCheckedAt, availabilityExpiresAt) = when (probeResult) {
             is StreamProbeResult.Available -> {
@@ -858,6 +1101,10 @@ class ContentMatchingEngine(
             availabilityExpiresAt = availabilityExpiresAt
         )
 
+        android.util.Log.d(
+            "ZippyPlayback",
+            "[MOVIEBOX_MAPPING_RESULT] tmdbId=$tmdbId, status=${finalMapping.matchStatus}, subjectId='${finalMapping.movieboxSubjectId}', slug='${finalMapping.movieboxDetailPath}', confidence=${finalMapping.matchConfidence}, hasStreams=${finalMapping.hasAvailableStreams}"
+        )
         dao.upsertMapping(finalMapping.toEntity())
         return finalMapping
     }

@@ -31,6 +31,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
+import com.example.data.model.ContentSourceIndicator
 import com.example.data.local.WatchHistoryEntity
 import com.example.data.model.MovieItem
 import com.example.ui.HomeUiState
@@ -263,8 +264,30 @@ fun HomeScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Official Zippy lockup
-            ZippyLogo(tint = Color.White) // legibility-ok: top bar scrim is black in every theme
+            // Official Zippy lockup + TMDB source indicator
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                ZippyLogo(tint = Color.White) // legibility-ok: top bar scrim is black in every theme
+                if (uiState.effectiveSourceIndicator == ContentSourceIndicator.TMDB) {
+                    Surface(
+                        shape = RoundedCornerShape(4.dp),
+                        color = Color(0xFF01B4E4).copy(alpha = 0.22f), // legibility-ok: tmdb badge bg
+                        border = androidx.compose.foundation.BorderStroke(0.8.dp, Color(0xFF01B4E4).copy(alpha = 0.75f)), // legibility-ok: tmdb badge border
+                        modifier = Modifier.testTag("tmdb_source_indicator")
+                    ) {
+                        Text(
+                            text = "TMDB",
+                            color = Color(0xFF90CEA1), // legibility-ok: tmdb badge text
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.5.sp,
+                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+            }
 
             // Top right search action
             IconButton(

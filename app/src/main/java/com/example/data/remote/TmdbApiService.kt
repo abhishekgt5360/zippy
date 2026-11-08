@@ -143,6 +143,8 @@ object TmdbNetworkClient {
     }
 
     private fun getApiKey(): String {
+        val customKey = com.example.util.TmdbPreferences.getApiKey()
+        if (customKey.isNotBlank()) return customKey
         return try {
             val key = BuildConfig.TMDB_API_KEY
             if (key.isNotBlank() && key != "NOT_SET") key else ""

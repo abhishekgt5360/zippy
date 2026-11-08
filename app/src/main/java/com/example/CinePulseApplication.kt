@@ -15,8 +15,9 @@ class CinePulseApplication : Application(), ImageLoaderFactory {
     override fun onCreate() {
         super.onCreate()
         // Initialize network client with disk cache for fast movie loading
-        NetworkClient.init(cacheDir)
+        NetworkClient.init(cacheDir, this)
         TmdbNetworkClient.init(cacheDir)
+        com.example.util.TmdbPreferences.init(this)
         // Load the bundled Nigerian-title blocklist before any feed is rendered.
         NollywoodFilter.init(this)
         // Load the verified adult-title blocklist used while 18+ is disabled.

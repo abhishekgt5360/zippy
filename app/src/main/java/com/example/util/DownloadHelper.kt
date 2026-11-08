@@ -7,9 +7,7 @@ import android.os.Environment
 import android.widget.Toast
 
 object DownloadHelper {
-    private const val HTTP_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    private const val REFERER_HEADER = "https://moviebox.ph/"
-    private const val ORIGIN_HEADER = "https://moviebox.ph"
+    private const val HTTP_USER_AGENT = "MovieBoxPro/16.2.1 (Android 14; com.community.mbox.in)"
 
     fun downloadVideo(
         context: Context,
@@ -17,7 +15,9 @@ object DownloadHelper {
         title: String,
         resolution: String,
         season: Int? = null,
-        episode: Int? = null
+        episode: Int? = null,
+        cookie: String? = null,
+        headers: Map<String, String>? = null
     ) {
         if (url.isBlank()) {
             Toast.makeText(context, "No download stream link available.", Toast.LENGTH_SHORT).show()
@@ -47,8 +47,15 @@ object DownloadHelper {
                 .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
                 .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "Zippy/$fileName")
                 .addRequestHeader("User-Agent", HTTP_USER_AGENT)
-                .addRequestHeader("Referer", REFERER_HEADER)
-                .addRequestHeader("Origin", ORIGIN_HEADER)
+                .addRequestHeader("Accept", "*/*")
+                .apply {
+                    if (!cookie.isNullOrBlank()) {
+                        addRequestHeader("Cookie", cookie)
+                    }
+                    headers?.forEach { (k, v) ->
+                        addRequestHeader(k, v)
+                    }
+                }
                 .setAllowedOverMetered(true)
                 .setAllowedOverRoaming(true)
 
@@ -60,15 +67,23 @@ object DownloadHelper {
                 val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager
                     ?: throw e
                 val safeTitle = title.replace(Regex("[^a-zA-Z0-9.-]"), "_").trim('_')
-                val fileName = "${safeTitle}_${resolution}.mp4"
+                val ext = if (url.contains(".mkv", ignoreCase = true)) "mkv" else "mp4"
+                val fileName = "${safeTitle}_${resolution}.$ext"
                 val fallbackRequest = DownloadManager.Request(Uri.parse(url))
                     .setTitle(fileName)
                     .setDescription("Downloading $title ($resolution) via Zippy")
                     .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
                     .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
                     .addRequestHeader("User-Agent", HTTP_USER_AGENT)
-                    .addRequestHeader("Referer", REFERER_HEADER)
-                    .addRequestHeader("Origin", ORIGIN_HEADER)
+                    .addRequestHeader("Accept", "*/*")
+                    .apply {
+                        if (!cookie.isNullOrBlank()) {
+                            addRequestHeader("Cookie", cookie)
+                        }
+                        headers?.forEach { (k, v) ->
+                            addRequestHeader(k, v)
+                        }
+                    }
                     .setAllowedOverMetered(true)
                     .setAllowedOverRoaming(true)
                 downloadManager.enqueue(fallbackRequest)

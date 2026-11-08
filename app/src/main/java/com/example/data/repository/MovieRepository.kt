@@ -17,10 +17,15 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
 
 class MovieRepository(
-    private val api: MovieApiService = NetworkClient.api,
+    api: MovieApiService? = null,
     private val database: AppDatabase,
     context: android.content.Context? = null
 ) {
+    private val customApi: MovieApiService? = api
+    private val api: MovieApiService
+        get() = customApi ?: NetworkClient.api
+
+
     private val cacheDir = context?.applicationContext?.cacheDir ?: context?.cacheDir
     private val dao = database.watchDao()
     private val homeJsonAdapter by lazy { NetworkClient.moshi.adapter(HomeResponse::class.java) }
@@ -343,6 +348,11 @@ class MovieRepository(
             val initialSe = if (isSeries) season.coerceAtLeast(1) else 0
             val initialEp = if (isSeries) episode.coerceAtLeast(1) else 0
 
+            android.util.Log.d(
+                "ZippyPlayback",
+                "[STREAM_REQUEST] endpoint='/api/stream/$subjectId', slug='$slug', se=$initialSe, ep=$initialEp, isSeries=$isSeries"
+            )
+
             var usableResponse: StreamResponse? = null
             var anyNetworkFailure = false
             var lastNetworkException: Exception? = null
@@ -350,6 +360,10 @@ class MovieRepository(
 
             try {
                 val initial = api.getStream(subjectId = subjectId, detailPath = slug, season = initialSe, episode = initialEp)
+                android.util.Log.d(
+                    "ZippyPlayback",
+                    "[STREAM_RESPONSE] endpoint='/api/stream/$subjectId', hasResource=${initial.hasResource}, rawSources=${initial.sources.size}, hls=${initial.hls.size}, dash=${initial.dash.size}"
+                )
                 if (initial.hasUsableStreams) {
                     usableResponse = initial
                 } else {
@@ -357,6 +371,10 @@ class MovieRepository(
                 }
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
+                android.util.Log.e(
+                    "ZippyPlayback",
+                    "[STREAM_RESPONSE] endpoint='/api/stream/$subjectId' failed: ${e.javaClass.simpleName} - ${e.message}"
+                )
                 anyNetworkFailure = true
                 lastNetworkException = e
             }
@@ -408,6 +426,10 @@ class MovieRepository(
                     Result.failure(error)
                 } else {
                     val cleanSources = usableResponse.effectiveSources.filter { it.url.isNotBlank() }
+                    android.util.Log.d(
+                        "ZippyPlayback",
+                        "[STREAM_PARSE_RESULT] endpoint='/api/stream/$subjectId', validSources=${cleanSources.size}, formats=${cleanSources.map { it.format ?: "unknown" }}, resolutions=${cleanSources.map { it.resolution }}"
+                    )
                     val finalResponse = if (cleanSources.isNotEmpty()) {
                         usableResponse.copy(sources = cleanSources)
                     } else {
@@ -451,6 +473,11 @@ class MovieRepository(
         try {
             val initialSe = if (isSeries) season.coerceAtLeast(1) else 0
             val initialEp = if (isSeries) episode.coerceAtLeast(1) else 0
+
+            android.util.Log.d(
+                "ZippyPlayback",
+                "[MOVIEBOX_SUBTITLE_REQUEST] endpoint='/api/stream/$subjectId/captions', slug='$slug', se=$initialSe, ep=$initialEp"
+            )
 
             var response = try {
                 api.getCaptions(subjectId = subjectId, detailPath = slug, season = initialSe, episode = initialEp)

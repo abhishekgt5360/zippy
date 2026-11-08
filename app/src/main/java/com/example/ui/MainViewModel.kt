@@ -8,8 +8,11 @@ import androidx.lifecycle.viewModelScope
 import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
+import com.example.data.remote.RoutingHttpDataSource
+import com.example.data.remote.ActiveStreamHeaders
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.extractor.DefaultExtractorsFactory
@@ -36,6 +39,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
 
 import com.example.ui.theme.ThemeMode
 
@@ -59,8 +63,13 @@ data class HomeUiState(
     val isLoading: Boolean = true,
     val bannerItems: List<MovieItem> = emptyList(),
     val sections: List<HomeSection> = emptyList(),
-    val errorMessage: String? = null
-)
+    val errorMessage: String? = null,
+    val sourceIndicator: ContentSourceIndicator = ContentSourceIndicator.NONE
+) {
+    val effectiveSourceIndicator: ContentSourceIndicator
+        get() = if (sourceIndicator != ContentSourceIndicator.NONE) sourceIndicator
+                else computeSourceIndicator(bannerItems + sections.flatMap { it.items })
+}
 
 data class CatalogUiState(
     val type: CatalogType = CatalogType.MOVIES,
@@ -73,16 +82,26 @@ data class CatalogUiState(
     val isLoading: Boolean = false,
     val page: Int = 1,
     val hasMore: Boolean = true,
-    val errorMessage: String? = null
-)
+    val errorMessage: String? = null,
+    val sourceIndicator: ContentSourceIndicator = ContentSourceIndicator.NONE
+) {
+    val effectiveSourceIndicator: ContentSourceIndicator
+        get() = if (sourceIndicator != ContentSourceIndicator.NONE) sourceIndicator
+                else computeSourceIndicator(items)
+}
 
 data class SearchUiState(
     val query: String = "",
     val suggestions: List<String> = emptyList(),
     val results: List<MovieItem> = emptyList(),
     val isSearching: Boolean = false,
-    val errorMessage: String? = null
-)
+    val errorMessage: String? = null,
+    val sourceIndicator: ContentSourceIndicator = ContentSourceIndicator.NONE
+) {
+    val effectiveSourceIndicator: ContentSourceIndicator
+        get() = if (sourceIndicator != ContentSourceIndicator.NONE) sourceIndicator
+                else computeSourceIndicator(results)
+}
 
 data class DetailPlayerUiState(
     val slug: String? = null,
@@ -116,7 +135,9 @@ data class DetailPlayerUiState(
     val isProviderAvailable: Boolean = false,
     val providerMatchStatus: String? = null,
     val directorName: String? = null,
-    val recommendations: List<MovieItem> = emptyList()
+    val recommendations: List<MovieItem> = emptyList(),
+    val dubs: List<DubItem> = emptyList(),
+    val selectedDub: DubItem? = null
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -134,6 +155,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setThemeMode(mode: ThemeMode) {
         prefs.edit().putString("theme_mode", mode.name).apply()
         _themeMode.value = mode
+    }
+
+    val tmdbApiKey: StateFlow<String> = com.example.util.TmdbPreferences.apiKeyFlow
+
+    fun setTmdbApiKey(key: String) {
+        com.example.util.TmdbPreferences.setApiKey(getApplication(), key)
+        loadHomeFeed(forceRefresh = true)
     }
 
     private val _isAdultEnabled = MutableStateFlow(prefs.getBoolean("adult_enabled", false))
@@ -251,24 +279,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     init {
         loadHomeFeed()
         loadCatalog(reset = true)
+        viewModelScope.launch(Dispatchers.IO) {
+            repository.watchHistory.collectLatest { historyList ->
+                if (!tmdbRepository.isConfigured()) return@collectLatest
+                historyList.forEach { history ->
+                    val tmdbId = history.tmdbId ?: MovieBoxPlaybackGuard.extractTmdbIdFromSlug(history.slug)
+                    val currentPoster = history.posterUrl.orEmpty()
+                    val isAlreadyBackdrop = currentPoster.contains("/w780/") || currentPoster.contains("/w1280/")
+                    if (tmdbId != null && !isAlreadyBackdrop) {
+                        try {
+                            val isTv = history.type?.equals("tv", ignoreCase = true) == true || history.season > 0
+                            val detail = if (isTv) {
+                                tmdbRepository.getTvDetail(tmdbId).getOrNull()
+                            } else {
+                                tmdbRepository.getMovieDetail(tmdbId).getOrNull()
+                            }
+                            val backdrop = detail?.backdropUrl("w780")
+                            if (!backdrop.isNullOrBlank() && backdrop != history.posterUrl) {
+                                database.watchDao().upsertHistory(history.copy(posterUrl = backdrop, tmdbId = tmdbId))
+                            }
+                        } catch (_: Exception) {}
+                    }
+                }
+            }
+        }
     }
 
     @OptIn(UnstableApi::class)
     fun getPlayer(context: Context): ExoPlayer {
         if (playerInstance == null) {
-            val httpDataSourceFactory = DefaultHttpDataSource.Factory()
-                .setUserAgent(HTTP_USER_AGENT)
-                .setDefaultRequestProperties(
-                    mapOf(
-                        "Referer" to REFERER_HEADER,
-                        "Origin" to "https://moviebox.ph",
-                        "Accept" to "*/*",
-                        "Accept-Encoding" to "identity" // CRITICAL: Prevents CDN proxy from gzip-compressing MP4 containers which causes parsing container malformed
-                    )
-                )
-                .setAllowCrossProtocolRedirects(true)
-                .setConnectTimeoutMs(25000)
-                .setReadTimeoutMs(35000)
+            val httpDataSourceFactory = RoutingHttpDataSource.Factory(
+                context = context.applicationContext
+            )
 
             val dataSourceFactory = DefaultDataSource.Factory(context.applicationContext, httpDataSourceFactory)
 
@@ -298,7 +340,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 .setPrioritizeTimeOverSizeThresholds(true)
                 .build()
 
-            playerInstance = ExoPlayer.Builder(context.applicationContext)
+            val renderersFactory = DefaultRenderersFactory(context.applicationContext)
+                .setEnableDecoderFallback(true)
+                .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
+
+            playerInstance = ExoPlayer.Builder(context.applicationContext, renderersFactory)
                 .setMediaSourceFactory(mediaSourceFactory)
                 .setLoadControl(loadControl)
                 .setSeekForwardIncrementMs(10000)
@@ -354,7 +400,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun closeBlockedDetail(title: String?) {
         playerInstance?.stop()
         playerInstance?.clearMediaItems()
-        _detailPlayerState.value = DetailPlayerUiState(blockedNotice = blockedMessage(title))
+        _detailPlayerState.value = DetailPlayerUiState(
+            blockedNotice = blockedMessage(title)
+        )
     }
 
     fun clearBlockedNotice() {
@@ -490,7 +538,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 isLoading = false,
                                 bannerItems = banner,
                                 sections = sectionsList,
-                                errorMessage = null
+                                errorMessage = null,
+                                sourceIndicator = ContentSourceIndicator.TMDB
                             )
                         }
                         return@launch
@@ -519,7 +568,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         isLoading = false,
                         bannerItems = bannerItems,
                         sections = otherSections,
-                        errorMessage = null
+                        errorMessage = null,
+                        sourceIndicator = ContentSourceIndicator.MOVIEBOX
                     )
                 }
             }.onFailure { error ->
@@ -536,14 +586,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             isLoading = false,
                             bannerItems = bannerItems,
                             sections = otherSections,
-                            errorMessage = null
+                            errorMessage = null,
+                            sourceIndicator = ContentSourceIndicator.MOVIEBOX
                         )
                     }
                 } else {
                     _homeState.update {
                         it.copy(
                             isLoading = false,
-                            errorMessage = error.localizedMessage ?: "Failed to load home feed. Please check your connection."
+                            errorMessage = error.localizedMessage ?: "Failed to load home feed. Please check your connection.",
+                            sourceIndicator = ContentSourceIndicator.NONE
                         )
                     }
                 }
@@ -1137,6 +1189,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val isMovieBoxSlug = MovieBoxPlaybackGuard.isValidMovieBoxSlug(slug)
         val mediaType = if (slug.startsWith("tmdb_tv_", ignoreCase = true) || guessedSeries) "tv" else "movie"
 
+        android.util.Log.d(
+            "ZippyPlayback",
+            "openDetail: title='$title', mediaType='$mediaType', isFromTmdb=${effectiveTmdbId != null}, tmdbId=$effectiveTmdbId, subjectId='$subjectId', slug='$slug'"
+        )
+
         _detailPlayerState.value = DetailPlayerUiState(
             slug = slug,
             subjectId = subjectId,
@@ -1214,14 +1271,48 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (effectiveTmdbId != null) {
                 viewModelScope.launch {
                     try {
-                        val match = matchingEngine.getMapping(
+                        var effYear = releaseYear
+                        var effLang = originalLanguage
+                        var effCountry = country
+                        if (effYear.isNullOrBlank() && tmdbRepository.isConfigured()) {
+                            try {
+                                val tmdbRes = if (mediaType == "tv") tmdbRepository.getTvDetail(effectiveTmdbId).getOrNull()
+                                              else tmdbRepository.getMovieDetail(effectiveTmdbId).getOrNull()
+                                if (tmdbRes != null) {
+                                    effYear = tmdbRes.year ?: effYear
+                                    effLang = tmdbRes.originalLanguage ?: effLang
+                                    effCountry = tmdbRes.originCountry?.firstOrNull() ?: effCountry
+                                }
+                            } catch (_: Exception) {}
+                        }
+                        var match = matchingEngine.getMapping(
                             tmdbId = effectiveTmdbId,
                             mediaType = mediaType,
                             title = title,
                             originalTitle = originalTitle ?: title,
-                            releaseYear = releaseYear,
-                            language = originalLanguage,
-                            country = country
+                            releaseYear = effYear,
+                            language = effLang,
+                            country = effCountry
+                        )
+                        if (!match.isPlayable && match.matchStatus != MatchStatus.VERIFIED) {
+                            try {
+                                match = matchingEngine.getMapping(
+                                    tmdbId = effectiveTmdbId,
+                                    mediaType = mediaType,
+                                    title = title,
+                                    originalTitle = originalTitle ?: title,
+                                    releaseYear = effYear,
+                                    language = effLang,
+                                    country = effCountry,
+                                    forceRefresh = true
+                                )
+                            } catch (e: Exception) {
+                                if (e is kotlinx.coroutines.CancellationException) throw e
+                            }
+                        }
+                        android.util.Log.d(
+                            "ZippyPlayback",
+                            "openDetail matching result: tmdbId=$effectiveTmdbId, status=${match.matchStatus}, isPlayable=${match.isPlayable}, hasStreams=${match.hasAvailableStreams}"
                         )
                         if (match.isPlayable) {
                             val verifiedSlug = match.movieboxDetailPath!!
@@ -1362,6 +1453,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         isSeries = isSeries
                     )
 
+                    val parsedDubs = detailRes.data?.dubs ?: detailRes.data?.subject?.dubs.orEmpty()
+                    val initialDub = parsedDubs.find { it.isOriginal } ?: parsedDubs.firstOrNull()
+
                     _detailPlayerState.update {
                         it.copy(
                             detail = detailRes,
@@ -1372,7 +1466,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             selectedSeason = actualSe,
                             selectedEpisode = actualEp,
                             isLoadingDetail = false,
-                            session = session
+                            session = session,
+                            dubs = parsedDubs,
+                            selectedDub = it.selectedDub ?: initialDub
                         )
                     }
 
@@ -1408,10 +1504,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         originalLanguage: String? = null,
         country: String? = null
     ) {
+        val canDirectlyPlay = MovieBoxPlaybackGuard.canInitiatePlayback(subjectId, slug)
         val effectiveTmdbId = tmdbId ?: _detailPlayerState.value.tmdbId ?: MovieBoxPlaybackGuard.extractTmdbIdFromSlug(slug)
 
-        // For TMDB-originated items: check mapping and require VERIFIED status + playable streams
-        if (effectiveTmdbId != null) {
+        android.util.Log.d(
+            "ZippyPlayback",
+            "playItem requested: title='${_detailPlayerState.value.title}', subjectId='$subjectId', slug='$slug', " +
+            "season=$season, episode=$episode, canDirectlyPlay=$canDirectlyPlay, tmdbId=$effectiveTmdbId"
+        )
+
+        // If the item cannot directly initiate MovieBox playback (e.g. it is an unverified TMDB placeholder slug "tmdb_..."),
+        // resolve genuine MovieBox provider mappings via ContentMatchingEngine first.
+        if (!canDirectlyPlay) {
+            if (effectiveTmdbId == null) {
+                android.util.Log.w("ZippyPlayback", "playItem blocked: Cannot initiate playback and no TMDB ID available for mapping.")
+                _detailPlayerState.update {
+                    it.copy(
+                        isPlaying = false,
+                        isLoadingStream = false,
+                        streamError = "This title is not currently available for streaming."
+                    )
+                }
+                return
+            }
+
+            android.util.Log.d("ZippyPlayback", "playItem: Resolving MovieBox mapping for TMDB ID $effectiveTmdbId...")
             _detailPlayerState.update {
                 it.copy(
                     isPlaying = false,
@@ -1434,15 +1551,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     originalTitle = effOrigTitle,
                     releaseYear = effYear,
                     language = effLang,
-                    country = effCountry
+                    country = effCountry,
+                    forceRefresh = true
                 )
+                android.util.Log.d(
+                    "ZippyPlayback",
+                    "playItem matching result: tmdbId=$effectiveTmdbId, status=${match.matchStatus}, " +
+                    "isPlayable=${match.isPlayable}, hasStreams=${match.hasAvailableStreams}"
+                )
+
                 if (match.isPlayable) {
                     val verifiedSubjectId = match.movieboxSubjectId!!
                     val verifiedSlug = match.movieboxDetailPath!!
                     _detailPlayerState.update {
                         it.copy(
                             slug = verifiedSlug,
-                            subjectId = verifiedSubjectId
+                            subjectId = verifiedSubjectId,
+                            isProviderAvailable = true,
+                            isMatchingProvider = false,
+                            providerMatchStatus = "VERIFIED"
                         )
                     }
                     playItem(
@@ -1451,7 +1578,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         season = season,
                         episode = episode,
                         resumePositionMs = resumePositionMs,
-                        tmdbId = null
+                        tmdbId = effectiveTmdbId
                     )
                 } else {
                     _detailPlayerState.update {
@@ -1471,6 +1598,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // An empty MovieBox subject ID must NEVER reach repository.getStream().
         // A TMDB ID must NEVER be substituted for a MovieBox subject ID.
         if (!MovieBoxPlaybackGuard.canInitiatePlayback(subjectId, slug, null)) {
+            android.util.Log.w("ZippyPlayback", "playItem blocked by guard: subjectId='$subjectId', slug='$slug'")
             _detailPlayerState.update {
                 it.copy(
                     isPlaying = false,
@@ -1504,11 +1632,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val oldSession = current.session
             val player = playerInstance
             if (oldSession != null && player != null && player.duration > 0 && player.currentPosition > 0) {
+                val landscapePoster = current.tmdbDetail?.backdropUrl("w780") ?: current.posterUrl
                 repository.saveWatchProgress(
                     subjectId = oldSession.subjectId,
                     slug = current.slug ?: slug,
                     title = current.title,
-                    posterUrl = current.posterUrl,
+                    posterUrl = landscapePoster,
                     season = oldSession.season,
                     episode = oldSession.episode,
                     positionMs = player.currentPosition,
@@ -1535,6 +1664,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 isSeries = isSeries
             )
 
+            android.util.Log.d(
+                "ZippyPlayback",
+                "Starting playback session: subjectId='$subjectId', se=$actualSe, ep=$actualEp, startPosMs=$initialPos, isSeries=$isSeries"
+            )
+
             _detailPlayerState.update {
                 it.copy(
                     slug = slug,
@@ -1544,17 +1678,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     isPlaying = true,
                     isLoadingStream = true,
                     streamError = null,
+                    streamResponse = null,
+                    captions = emptyList(),
                     session = newSession
                 )
             }
 
+            android.util.Log.d("ZippyPlayback", "Requesting stream for subjectId='$subjectId', slug='$slug', se=$actualSe, ep=$actualEp")
             // Fetch stream and captions in parallel
             val streamResult = repository.getStream(subjectId, slug, actualSe, actualEp, isSeries = isSeries)
             val captionsResult = repository.getCaptions(subjectId, slug, actualSe, actualEp, isSeries = isSeries)
 
             streamResult.onSuccess { streamRes ->
                 val caps = captionsResult.getOrNull()?.captions.orEmpty()
+                android.util.Log.d(
+                    "ZippyPlayback",
+                    "getStream success: sources=${streamRes.sources.size}, hasResource=${streamRes.hasResource}, " +
+                    "formats=${streamRes.sources.map { it.format ?: "unknown" }}"
+                )
                 if (streamRes.sources.isNotEmpty()) {
+                    val firstSource = streamRes.sources.firstOrNull()
+                    ActiveStreamHeaders.update(firstSource?.cookie, firstSource?.headers)
                     _detailPlayerState.update {
                         it.copy(
                             streamResponse = streamRes,
@@ -1564,6 +1708,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         )
                     }
                 } else {
+                    android.util.Log.w("ZippyPlayback", "getStream returned empty sources list.")
                     _detailPlayerState.update {
                         it.copy(
                             streamResponse = streamRes,
@@ -1574,6 +1719,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
             }.onFailure { err ->
+                android.util.Log.e("ZippyPlayback", "getStream failed: ${err.javaClass.simpleName} - ${err.message}")
                 _detailPlayerState.update {
                     it.copy(
                         isLoadingStream = false,
@@ -1618,7 +1764,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val isSeries = _detailPlayerState.value.isSeries
         val s = if (isSeries) season.coerceAtLeast(1) else 0
         val e = if (isSeries) episode.coerceAtLeast(1) else 0
-        val allSources = repository.getStream(finalSubjectId, finalSlug, s, e, isSeries = isSeries).getOrNull()?.sources.orEmpty()
+        val allSources = repository.getStream(finalSubjectId, finalSlug, s, e, isSeries = isSeries)
+            .getOrNull()?.sources.orEmpty()
+            .map { it.copy(url = it.directUrl ?: it.url) }
         val progressive = allSources.filter { it.isDownloadable }
         return if (progressive.isNotEmpty()) progressive else allSources.filter { !it.url.contains(".m3u8", ignoreCase = true) && !it.url.contains(".mpd", ignoreCase = true) }
     }
@@ -1628,6 +1776,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val slug = s.slug ?: return
         val subjectId = s.subjectId ?: return
         playItem(slug, subjectId, season, episode, resumePositionMs = 0L)
+    }
+
+    fun switchDub(dub: DubItem, currentPositionMs: Long) {
+        val current = _detailPlayerState.value
+        val isSeries = current.isSeries
+        val se = current.selectedSeason
+        val ep = current.selectedEpisode
+        _detailPlayerState.update { it.copy(selectedDub = dub) }
+        playItem(
+            slug = dub.subjectId,
+            subjectId = dub.subjectId,
+            season = se,
+            episode = ep,
+            resumePositionMs = currentPositionMs
+        )
     }
 
     fun resetEpisodeProgress(subjectId: String, season: Int, episode: Int, isSeries: Boolean) {
@@ -1641,7 +1804,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val subId = s.session?.subjectId ?: s.subjectId ?: return
         val slug = s.slug ?: return
         val title = s.title.ifBlank { s.detail?.data?.subject?.title ?: "Movie" }
-        val poster = s.posterUrl?.takeIf { it.isNotBlank() } ?: s.detail?.data?.subject?.cover?.url
+        val landscapePoster = s.tmdbDetail?.backdropUrl("w780")
+            ?: s.posterUrl?.takeIf { it.isNotBlank() }
+            ?: s.detail?.data?.subject?.cover?.url
         val type = if (s.isSeries) "tv" else "movie"
         val season = s.session?.season ?: s.selectedSeason
         val episode = s.session?.episode ?: s.selectedEpisode
@@ -1652,7 +1817,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 subjectId = subId,
                 slug = slug,
                 title = title,
-                posterUrl = poster,
+                posterUrl = landscapePoster,
                 season = season,
                 episode = episode,
                 positionMs = posMs,
@@ -1711,12 +1876,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun closePlayer() {
+        ActiveStreamHeaders.clear()
         playerInstance?.pause()
         playerInstance?.stop()
         _detailPlayerState.update { it.copy(isPlaying = false) }
     }
 
     fun closeDetail() {
+        ActiveStreamHeaders.clear()
         playerInstance?.pause()
         playerInstance?.stop()
         _detailPlayerState.value = DetailPlayerUiState()
@@ -1724,6 +1891,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
+        ActiveStreamHeaders.clear()
         matchingEngine.cancel()
         playerInstance?.release()
         playerInstance = null

@@ -1716,7 +1716,7 @@ class ContentMatchingEngineTest {
         assertTrue("Later fallback with usable MP4 must return Result.success", result.isSuccess)
         val stream = result.getOrNull()!!
         assertTrue(stream.hasUsableStreams)
-        assertEquals("https://cdn.example.com/movie52.mp4", stream.sources.first().url)
+        assertEquals("https://cdn.example.com/movie52.mp4", stream.sources.first().directUrl ?: stream.sources.first().url)
     }
 
     @Test
@@ -1844,5 +1844,336 @@ class ContentMatchingEngineTest {
         } catch (e: Exception) {
             assertTrue(e is kotlinx.coroutines.CancellationException)
         }
+    }
+
+    // ── 58. TV series with season range title ─────────────────────────────
+    @Test
+    fun test58_tvSeriesWithSeasonRangeTitle_returnsVerifiedAndPlayable() = runBlocking {
+        fakeApi.searchResults = mutableListOf(
+            MovieItem(
+                name = "Avatar: The Last Airbender S1-S2",
+                slug = "avatar-the-last-airbender-slug",
+                rawSubjectId = "7850278583678682192",
+                rawYear = 2024,
+                rawType = 2
+            )
+        )
+        fakeApi.detailResponses["avatar-the-last-airbender-slug"] = DetailResponse(
+            code = 200,
+            data = DetailData(
+                subject = SubjectDetail(
+                    rawSubjectId = "7850278583678682192",
+                    title = "Avatar: The Last Airbender S1-S2",
+                    rawSubjectType = 2,
+                    releaseDate = "2024-02-22",
+                    hasResource = true
+                ),
+                resource = ResourceDetail(
+                    seasons = listOf(
+                        SeasonItem(se = 1, maxEp = 8),
+                        SeasonItem(se = 2, maxEp = 7)
+                    )
+                )
+            )
+        )
+
+        val match = engine.getMapping(
+            tmdbId = 82452L,
+            mediaType = "tv",
+            title = "Avatar: The Last Airbender",
+            releaseYear = "2024"
+        )
+
+        assertEquals("Season range title must be verified", MatchStatus.VERIFIED, match.matchStatus)
+        assertTrue("TV series with season range must be playable", match.isPlayable)
+        assertEquals("7850278583678682192", match.movieboxSubjectId)
+    }
+
+    // ── 59. TV series later season year matches debut year ──────────────────
+    @Test
+    fun test59_tvSeriesLaterSeasonYear_matchesDebutYear() = runBlocking {
+        fakeApi.searchResults = mutableListOf(
+            MovieItem(
+                name = "Supernatural S15",
+                slug = "supernatural-slug",
+                rawSubjectId = "8966281867964076560",
+                rawYear = 2019, // Season 15 aired 2019
+                rawType = 2
+            )
+        )
+        fakeApi.detailResponses["supernatural-slug"] = DetailResponse(
+            code = 200,
+            data = DetailData(
+                subject = SubjectDetail(
+                    rawSubjectId = "8966281867964076560",
+                    title = "Supernatural S1-S15",
+                    rawSubjectType = 2,
+                    releaseDate = "", // MovieBox TV detail often has empty releaseDate
+                    hasResource = true
+                ),
+                resource = ResourceDetail(
+                    seasons = listOf(SeasonItem(se = 1, maxEp = 22))
+                )
+            )
+        )
+
+        val match = engine.getMapping(
+            tmdbId = 1622L,
+            mediaType = "tv",
+            title = "Supernatural",
+            releaseYear = "2005" // Debut year
+        )
+
+        assertEquals("Multi-season series must be verified even when candidate year reflects season air date", MatchStatus.VERIFIED, match.matchStatus)
+        assertTrue("Must be playable", match.isPlayable)
+        assertEquals("8966281867964076560", match.movieboxSubjectId)
+    }
+
+    // ── 60. TV series candidate deduplication / no false ambiguity ──────────
+    @Test
+    fun test60_tvSeriesMultipleSeasonCandidates_deduplicatesAndPrefersSeason1Coverage() = runBlocking {
+        fakeApi.searchResults = mutableListOf(
+            MovieItem(
+                name = "Stranger Things S1-S5",
+                slug = "stranger-things-s1-s5",
+                rawSubjectId = "4956801153355891744",
+                rawYear = 2016,
+                rawType = 2
+            ),
+            MovieItem(
+                name = "Stranger Things S1-S4",
+                slug = "stranger-things-s1-s4",
+                rawSubjectId = "1643119554609955664",
+                rawYear = 2016,
+                rawType = 2
+            )
+        )
+        fakeApi.detailResponses["stranger-things-s1-s5"] = DetailResponse(
+            code = 200,
+            data = DetailData(
+                subject = SubjectDetail(
+                    rawSubjectId = "4956801153355891744",
+                    title = "Stranger Things S1-S5",
+                    rawSubjectType = 2,
+                    releaseDate = "2016-07-15",
+                    hasResource = true
+                )
+            )
+        )
+
+        val match = engine.getMapping(
+            tmdbId = 66732L,
+            mediaType = "tv",
+            title = "Stranger Things",
+            releaseYear = "2016"
+        )
+
+        assertEquals("Multiple season packs of the same show must not trigger false ambiguity", MatchStatus.VERIFIED, match.matchStatus)
+        assertTrue(match.isPlayable)
+        assertEquals("4956801153355891744", match.movieboxSubjectId)
+    }
+
+    // ── 61. Unpunctuated title query finds candidate ────────────────────────
+    @Test
+    fun test61_unpunctuatedTitleQuery_findsCandidate() = runBlocking {
+        fakeApi.searchQueryResults["Greys Anatomy"] = listOf(
+            MovieItem(
+                name = "Greys Anatomy S1-S20",
+                slug = "greys-anatomy-slug",
+                rawSubjectId = "998877",
+                rawYear = 2005,
+                rawType = 2
+            )
+        )
+        fakeApi.detailResponses["greys-anatomy-slug"] = DetailResponse(
+            code = 200,
+            data = DetailData(
+                subject = SubjectDetail(
+                    rawSubjectId = "998877",
+                    title = "Greys Anatomy S1-S20",
+                    rawSubjectType = 2,
+                    releaseDate = "2005-03-27",
+                    hasResource = true
+                )
+            )
+        )
+
+        val match = engine.getMapping(
+            tmdbId = 1416L,
+            mediaType = "tv",
+            title = "Grey's Anatomy",
+            releaseYear = "2005"
+        )
+
+        assertEquals(MatchStatus.VERIFIED, match.matchStatus)
+        assertTrue(match.isPlayable)
+    }
+
+    // ── 62. Genuinely unavailable TV series returns NOT_FOUND ──────────────
+    @Test
+    fun test62_genuinelyUnavailableTvSeries_returnsNotFoundAndNotPlayable() = runBlocking {
+        fakeApi.searchResults = mutableListOf() // Empty results
+
+        val match = engine.getMapping(
+            tmdbId = 1434L,
+            mediaType = "tv",
+            title = "Family Guy",
+            releaseYear = "1999"
+        )
+
+        assertEquals(MatchStatus.NOT_FOUND, match.matchStatus)
+        assertFalse(match.isVerified)
+        assertFalse(match.isPlayable)
+        assertNull(match.movieboxSubjectId)
+    }
+
+    // ── 63. Lupin real MovieBox data matches and is playable ─────────────────
+    @Test
+    fun test63_lupinRealMovieBoxData_matchesAndIsPlayable() = runBlocking {
+        fakeApi.searchResults = mutableListOf(
+            MovieItem(
+                name = "Lupin S1-S4",
+                slug = "lupin-2rBwMMWNWZ",
+                rawSubjectId = "838601903666779168",
+                rawType = "tv",
+                rawYear = "2021",
+                country = "France"
+            ),
+            MovieItem(
+                name = "Lupin [English] S1-S4",
+                slug = "lupin-english-UqNLZqu3DD",
+                rawSubjectId = "536473933005177184",
+                rawType = "tv",
+                rawYear = "2025",
+                country = "France"
+            )
+        )
+        fakeApi.detailResponses["lupin-2rBwMMWNWZ"] = DetailResponse(
+            code = 0,
+            message = "ok",
+            data = DetailData(
+                subject = SubjectDetail(
+                    rawSubjectId = "838601903666779168",
+                    rawSubjectType = 2,
+                    title = "Lupin S1-S4",
+                    releaseDate = "2021-01-08"
+                ),
+                resource = null
+            )
+        )
+        fakeApi.streamResponses["838601903666779168"] = StreamResponse(
+            subjectId = "838601903666779168",
+            se = 1,
+            ep = 1,
+            hasResource = true,
+            sources = listOf(
+                StreamSource(resolution = "360p", format = "MP4", url = "https://example.com/360.mp4"),
+                StreamSource(resolution = "480p", format = "MP4", url = "https://example.com/480.mp4"),
+                StreamSource(resolution = "720p", format = "MP4", url = "https://example.com/720.mp4"),
+                StreamSource(resolution = "1080p", format = "MP4", url = "https://example.com/1080.mp4")
+            ),
+            hls = emptyList(),
+            dash = emptyList()
+        )
+
+        val match = engine.getMapping(
+            tmdbId = 96677L,
+            mediaType = "tv",
+            title = "Lupin",
+            originalTitle = "Lupin",
+            releaseYear = "2021",
+            language = "fr",
+            country = "FR"
+        )
+
+        assertEquals(MatchStatus.VERIFIED, match.matchStatus)
+        assertEquals("838601903666779168", match.movieboxSubjectId)
+        assertEquals("lupin-2rBwMMWNWZ", match.movieboxDetailPath)
+        assertTrue(match.hasAvailableStreams)
+        assertTrue(match.isPlayable)
+    }
+
+    // ── 64. Duplicate candidate ambiguity resolved by stream availability ───
+    @Test
+    fun test64_theOdysseyDuplicateCandidateResolvedByStreamAvailability() = runBlocking {
+        fakeApi.searchResults = mutableListOf(
+            MovieItem(
+                name = "The Odyssey",
+                slug = "the-odyssey-placeholder",
+                rawSubjectId = "6335851466744896",
+                rawYear = 2026,
+                rawType = 1
+            ),
+            MovieItem(
+                name = "The Odyssey",
+                slug = "the-odyssey-streamable",
+                rawSubjectId = "2413592258760133680",
+                rawYear = 2026,
+                rawType = 1
+            )
+        )
+
+        fakeApi.detailResponses["the-odyssey-placeholder"] = DetailResponse(
+            code = 200,
+            data = DetailData(
+                subject = SubjectDetail(
+                    rawSubjectId = "6335851466744896",
+                    title = "The Odyssey",
+                    rawSubjectType = 1,
+                    releaseDate = "2026-07-15"
+                )
+            )
+        )
+
+        fakeApi.detailResponses["the-odyssey-streamable"] = DetailResponse(
+            code = 200,
+            data = DetailData(
+                subject = SubjectDetail(
+                    rawSubjectId = "2413592258760133680",
+                    title = "The Odyssey",
+                    rawSubjectType = 1,
+                    releaseDate = "2026-07-17"
+                )
+            )
+        )
+
+        fakeApi.streamResponses["6335851466744896:the-odyssey-placeholder:0:0"] = StreamResponse(
+            rawSubjectId = "6335851466744896",
+            hasResource = false,
+            sources = emptyList()
+        )
+        fakeApi.streamResponses["6335851466744896"] = StreamResponse(
+            rawSubjectId = "6335851466744896",
+            hasResource = false,
+            sources = emptyList()
+        )
+
+        fakeApi.streamResponses["2413592258760133680:the-odyssey-streamable:0:0"] = StreamResponse(
+            rawSubjectId = "2413592258760133680",
+            hasResource = true,
+            sources = listOf(
+                StreamSource(resolution = "1080p", format = "MP4", url = "https://example.com/odyssey-1080p.mp4")
+            )
+        )
+        fakeApi.streamResponses["2413592258760133680"] = StreamResponse(
+            rawSubjectId = "2413592258760133680",
+            hasResource = true,
+            sources = listOf(
+                StreamSource(resolution = "1080p", format = "MP4", url = "https://example.com/odyssey-1080p.mp4")
+            )
+        )
+
+        val match = engine.getMapping(
+            tmdbId = 192837L,
+            mediaType = "movie",
+            title = "The Odyssey",
+            releaseYear = "2026"
+        )
+
+        assertEquals("Single playable candidate must be VERIFIED", MatchStatus.VERIFIED, match.matchStatus)
+        assertEquals("2413592258760133680", match.movieboxSubjectId)
+        assertEquals("the-odyssey-streamable", match.movieboxDetailPath)
+        assertTrue("Must be marked with available streams", match.hasAvailableStreams)
+        assertTrue("Must be playable", match.isPlayable)
     }
 }

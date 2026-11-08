@@ -227,7 +227,6 @@ fun InAppWebBrowserDialog(
                                 settings.apply {
                                     javaScriptEnabled = true
                                     domStorageEnabled = true
-                                    databaseEnabled = true
                                     cacheMode = WebSettings.LOAD_DEFAULT
                                     useWideViewPort = true
                                     loadWithOverviewMode = true

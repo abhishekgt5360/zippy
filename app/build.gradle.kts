@@ -61,6 +61,12 @@ android {
   }
 }
 
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+  compilerOptions {
+    freeCompilerArgs.add("-Xannotation-default-target=param-property")
+  }
+}
+
 androidComponents {
   onVariants { variant ->
     if (variant.name == "release") {

@@ -31,6 +31,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -51,6 +52,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -63,6 +66,7 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.example.data.model.CaptionItem
 import com.example.data.model.StreamSource
+import com.example.data.remote.ActiveStreamHeaders
 import com.example.ui.theme.*
 import com.example.util.CaptionPreferences
 import com.example.util.PlaybackSession
@@ -85,6 +89,14 @@ enum class ResizeMode(val mode: Int, val label: String) {
     FILL(AspectRatioFrameLayout.RESIZE_MODE_FILL, "Stretch")
 }
 
+data class PlayerAudioTrack(
+    val groupIndex: Int,
+    val trackIndex: Int,
+    val name: String,
+    val language: String?,
+    val isSelected: Boolean
+)
+
 @OptIn(UnstableApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun VideoPlayer(
@@ -94,8 +106,16 @@ fun VideoPlayer(
     sources: List<StreamSource>,
     initialSourceIndex: Int = 0,
     captions: List<CaptionItem> = emptyList(),
+    dubs: List<com.example.data.model.DubItem> = emptyList(),
+    selectedDub: com.example.data.model.DubItem? = null,
+    onDubSelected: ((com.example.data.model.DubItem) -> Unit)? = null,
     session: PlaybackSession? = null,
     isSeries: Boolean = false,
+    currentSeason: Int = 1,
+    currentEpisode: Int = 1,
+    totalEpisodes: Int = 1,
+    availableSeasons: List<com.example.data.model.SeasonItem> = emptyList(),
+    onSelectEpisode: (season: Int, episode: Int) -> Unit = { _, _ -> },
     onProgressUpdate: (positionMs: Long, durationMs: Long) -> Unit,
     onStartOver: (subjectId: String, season: Int, episode: Int, isSeries: Boolean) -> Unit = { _, _, _, _ -> },
     onBackClick: () -> Unit,
@@ -172,11 +192,61 @@ fun VideoPlayer(
     var subtitleDialogTab by remember { mutableIntStateOf(0) }
     var streamReloadTrigger by remember { mutableIntStateOf(0) }
 
-    // Modals
-    var showSettingsSheet by remember { mutableStateOf(false) }
-    var showQualityDialog by remember { mutableStateOf(false) }
-    var showSubtitleDialog by remember { mutableStateOf(false) }
-    var showSpeedDialog by remember { mutableStateOf(false) }
+    // Playback Settings Sheets
+    var activePlayerSheet by remember { mutableStateOf<String?>(null) }
+    var viewingSeason by remember(currentSeason) { mutableIntStateOf(currentSeason) }
+
+    // Intercept back gesture when settings sheet is open
+    BackHandler(enabled = activePlayerSheet != null) {
+        if (activePlayerSheet != "player_settings") {
+            activePlayerSheet = "player_settings"
+        } else {
+            activePlayerSheet = null
+        }
+    }
+
+    val audioTracks = remember(exoPlayer.currentTracks) {
+        val list = mutableListOf<PlayerAudioTrack>()
+        try {
+            val tracks = exoPlayer.currentTracks
+            for (groupIndex in 0 until tracks.groups.size) {
+                val group = tracks.groups[groupIndex]
+                if (group.type == androidx.media3.common.C.TRACK_TYPE_AUDIO) {
+                    for (trackIndex in 0 until group.length) {
+                        val format = group.getTrackFormat(trackIndex)
+                        val isSelected = group.isTrackSelected(trackIndex)
+                        val lang = format.language?.let {
+                            try {
+                                val loc = Locale.forLanguageTag(it)
+                                loc.getDisplayLanguage(Locale.ENGLISH).ifEmpty { it }
+                            } catch (_: Exception) { it }
+                        } ?: "Audio Track ${trackIndex + 1}"
+                        val channels = when (format.channelCount) {
+                            6 -> "5.1 Surround"
+                            2 -> "Stereo"
+                            1 -> "Mono"
+                            else -> null
+                        }
+                        val fullLabel = listOfNotNull(format.label ?: lang, channels).joinToString(" • ")
+                        list.add(
+                            PlayerAudioTrack(
+                                groupIndex = groupIndex,
+                                trackIndex = trackIndex,
+                                name = fullLabel,
+                                language = format.language,
+                                isSelected = isSelected
+                            )
+                        )
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        list
+    }
+
+    val currentAudioTrackName = remember(audioTracks) {
+        audioTracks.firstOrNull { it.isSelected }?.name ?: if (audioTracks.isNotEmpty()) audioTracks.first().name else "Original Audio"
+    }
 
     // Fix: Keep screen on during playback
     fun updateKeepScreenOn(playing: Boolean, state: Int, error: Boolean) {
@@ -235,8 +305,8 @@ fun VideoPlayer(
 
     // Seamless media loading: applies session start position EXACTLY ONCE
     LaunchedEffect(currentSource, session?.sessionId, streamReloadTrigger) {
-        if (currentSource != null && currentSource.url.isNotBlank()) {
-            val url = currentSource.url
+        if (currentSource != null && currentSource.playbackUrl.isNotBlank()) {
+            val url = currentSource.playbackUrl
             val currentMediaId = exoPlayer.currentMediaItem?.mediaId
             val isPlayerIdleOrError = exoPlayer.playbackState == Player.STATE_IDLE || exoPlayer.playerError != null
             
@@ -246,14 +316,20 @@ fun VideoPlayer(
                 errorMessage = null
                 isBuffering = true
                 try {
+                    ActiveStreamHeaders.update(currentSource.cookie, currentSource.headers)
                     val mediaItem = MediaItem.Builder()
                         .setMediaId(url)
                         .setUri(url)
                         .apply {
-                            currentSource?.resolveMimeType()?.let { setMimeType(it) }
+                            currentSource.resolveMimeType()?.let { setMimeType(it) }
                         }
                         .build()
-                    exoPlayer.setMediaItem(mediaItem, startPosMs.coerceAtLeast(0L))
+                    val targetPos = if (currentMediaId != null && currentMediaId != url && exoPlayer.currentPosition > 0L) {
+                        exoPlayer.currentPosition
+                    } else {
+                        startPosMs.coerceAtLeast(0L)
+                    }
+                    exoPlayer.setMediaItem(mediaItem, targetPos)
                     exoPlayer.prepare()
                     exoPlayer.play()
                 } catch (e: Exception) {
@@ -418,11 +494,12 @@ fun VideoPlayer(
                                 ?: freshSources.firstOrNull()
                                 ?: currentSource
 
-                            if (targetSource != null && targetSource.url.isNotBlank()) {
+                            if (targetSource != null && targetSource.playbackUrl.isNotBlank()) {
                                 reconnectingMessage = "Resuming playback..."
+                                ActiveStreamHeaders.update(targetSource.cookie, targetSource.headers)
                                 val mediaItem = MediaItem.Builder()
-                                    .setMediaId(targetSource.url)
-                                    .setUri(targetSource.url)
+                                    .setMediaId(targetSource.playbackUrl)
+                                    .setUri(targetSource.playbackUrl)
                                     .apply {
                                         targetSource.resolveMimeType()?.let { setMimeType(it) }
                                     }
@@ -436,9 +513,10 @@ fun VideoPlayer(
                             reconnectingMessage = "Reconnecting stream ($autoRetryCount/4)..."
                             delay(300)
                             try {
-                                val url = currentSource?.url
+                                val url = currentSource?.playbackUrl
                                 val safePos = resumePos.coerceAtLeast(0L)
                                 if (!url.isNullOrBlank()) {
+                                    ActiveStreamHeaders.update(currentSource?.cookie, currentSource?.headers)
                                     val mediaItem = MediaItem.Builder()
                                         .setMediaId(url)
                                         .setUri(url)
@@ -849,11 +927,12 @@ fun VideoPlayer(
                                         val targetSource = freshSources.getOrNull(selectedSourceIndex)
                                             ?: freshSources.firstOrNull()
                                             ?: currentSource
-                                        if (targetSource != null && targetSource.url.isNotBlank()) {
+                                        if (targetSource != null && targetSource.playbackUrl.isNotBlank()) {
                                             reconnectingMessage = "Resuming playback..."
+                                            ActiveStreamHeaders.update(targetSource.cookie, targetSource.headers)
                                             val mediaItem = MediaItem.Builder()
-                                                .setMediaId(targetSource.url)
-                                                .setUri(targetSource.url)
+                                                .setMediaId(targetSource.playbackUrl)
+                                                .setUri(targetSource.playbackUrl)
                                                 .apply {
                                                     targetSource.resolveMimeType()?.let { setMimeType(it) }
                                                 }
@@ -883,9 +962,10 @@ fun VideoPlayer(
                                     autoRetryCount = 0
                                     scope.launch {
                                         try {
-                                            val url = currentSource?.url
+                                            val url = currentSource?.playbackUrl
                                             val safePos = currentPosition.coerceAtLeast(0L)
                                             if (!url.isNullOrBlank()) {
+                                                ActiveStreamHeaders.update(currentSource?.cookie, currentSource?.headers)
                                                 val mediaItem = MediaItem.Builder()
                                                     .setMediaId(url)
                                                     .setUri(url)
@@ -1064,11 +1144,11 @@ fun VideoPlayer(
                             Icon(Icons.Default.AspectRatio, contentDescription = "Aspect Ratio", tint = Color.White) // legibility-ok: over video scrim
                         }
 
-                        TextButton(onClick = { showSpeedDialog = true }) {
+                        TextButton(onClick = { activePlayerSheet = "speed" }) {
                             Text("${playbackSpeed}x", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp) // legibility-ok: over video scrim
                         }
 
-                        IconButton(onClick = { showSubtitleDialog = true }) {
+                        IconButton(onClick = { activePlayerSheet = "subtitle" }) {
                             Icon(Icons.Default.ClosedCaption, contentDescription = "Subtitles", tint = Color.White) // legibility-ok: over video scrim
                         }
 
@@ -1098,7 +1178,7 @@ fun VideoPlayer(
                             Surface(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(6.dp))
-                                    .clickable { showQualityDialog = true },
+                                    .clickable { activePlayerSheet = "quality" },
                                 color = MaterialTheme.colorScheme.primary
                             ) {
                                 Text(
@@ -1111,6 +1191,18 @@ fun VideoPlayer(
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                                 )
                             }
+                        }
+
+                        IconButton(
+                            onClick = { activePlayerSheet = "player_settings" },
+                            modifier = Modifier.size(38.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Settings,
+                                contentDescription = "Player Settings",
+                                tint = Color.White, // legibility-ok: over video scrim
+                                modifier = Modifier.size(20.dp)
+                            )
                         }
                     } else {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1136,7 +1228,7 @@ fun VideoPlayer(
                             }
 
                             IconButton(
-                                onClick = { showSettingsSheet = true },
+                                onClick = { activePlayerSheet = "player_settings" },
                                 modifier = Modifier.size(38.dp)
                             ) {
                                 Icon(
@@ -1311,590 +1403,844 @@ fun VideoPlayer(
         }
     }
 
-    // SETTINGS DIALOG
-    if (showSettingsSheet) {
-        AlertDialog(
-            onDismissRequest = { showSettingsSheet = false },
-            title = {
-                Text(
-                    text = "Playback Settings",
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
-                )
+    // UNIFIED PLAYBACK SETTINGS SHEET (Matching AnyFilm)
+    if (activePlayerSheet != null) {
+        Dialog(
+            onDismissRequest = {
+                if (activePlayerSheet != null && activePlayerSheet != "player_settings") {
+                    activePlayerSheet = "player_settings"
+                } else {
+                    activePlayerSheet = null
+                }
             },
-            text = {
-                Column(
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                decorFitsSystemWindows = false
+            )
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.65f)) // legibility-ok: player sheet
+                    .clickable { activePlayerSheet = null },
+                contentAlignment = if (isLandscape) Alignment.Center else Alignment.BottomCenter
+            ) {
+                Card(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 4.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                        .clickable(enabled = false) {} // prevent dismissing when tapping card
+                        .then(
+                            if (isLandscape) {
+                                Modifier
+                                    .fillMaxWidth(0.65f)
+                                    .heightIn(max = 500.dp)
+                                    .wrapContentHeight()
+                                    .padding(16.dp)
+                            } else {
+                                Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 620.dp)
+                                    .wrapContentHeight()
+                                    .padding(horizontal = 8.dp, vertical = 12.dp)
+                            }
+                        ),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
                 ) {
-                    Box(
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(MaterialTheme.colorScheme.surfaceContainer)
-                            .border(
-                                if (isHighContrast) 1.5.dp else 0.5.dp,
-                                MaterialTheme.colorScheme.outlineVariant,
-                                RoundedCornerShape(12.dp)
-                            )
-                            .clickable {
-                                showSettingsSheet = false
-                                showQualityDialog = true
-                            }
-                            .padding(14.dp)
+                            .verticalScroll(rememberScrollState())
+                            .padding(18.dp)
                     ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("Video Quality", fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurface)
-                            Text(currentSource?.resolution ?: "Auto", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-                        }
-                    }
-
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(MaterialTheme.colorScheme.surfaceContainer)
-                            .border(
-                                if (isHighContrast) 1.5.dp else 0.5.dp,
-                                MaterialTheme.colorScheme.outlineVariant,
-                                RoundedCornerShape(12.dp)
-                            )
-                            .clickable {
-                                showSettingsSheet = false
-                                showSubtitleDialog = true
-                            }
-                            .padding(14.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("Subtitles & Style", fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurface)
-                            val subName = if (selectedCaptionIndex >= 0) captions.getOrNull(selectedCaptionIndex)?.lanName ?: "On" else "Off"
-                            Text("$subName • ${(captionBgOpacity * 100).roundToInt()}% bg", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-                        }
-                    }
-
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(MaterialTheme.colorScheme.surfaceContainer)
-                            .border(
-                                if (isHighContrast) 1.5.dp else 0.5.dp,
-                                MaterialTheme.colorScheme.outlineVariant,
-                                RoundedCornerShape(12.dp)
-                            )
-                            .clickable {
-                                showSettingsSheet = false
-                                showSpeedDialog = true
-                            }
-                            .padding(14.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("Playback Speed", fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurface)
-                            Text("${playbackSpeed}x", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-                        }
-                    }
-
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(MaterialTheme.colorScheme.surfaceContainer)
-                            .border(
-                                if (isHighContrast) 1.5.dp else 0.5.dp,
-                                MaterialTheme.colorScheme.outlineVariant,
-                                RoundedCornerShape(12.dp)
-                            )
-                            .clickable {
-                                currentResizeMode = when (currentResizeMode) {
-                                    ResizeMode.FIT -> ResizeMode.ZOOM
-                                    ResizeMode.ZOOM -> ResizeMode.FILL
-                                    ResizeMode.FILL -> ResizeMode.FIT
-                                }
-                            }
-                            .padding(14.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("Aspect Ratio", fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurface)
-                            Text(currentResizeMode.label, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showSettingsSheet = false }) {
-                    Text("Close", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-                }
-            },
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-            shape = RoundedCornerShape(20.dp)
-        )
-    }
-
-    // QUALITY DIALOG
-    if (showQualityDialog) {
-        AlertDialog(
-            onDismissRequest = { showQualityDialog = false },
-            title = { Text(text = "Video Resolution", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    sources.forEachIndexed { index, source ->
-                        val isSelected = index == selectedSourceIndex
-                        val selColors = selectableColors(isSelected)
-                        val shape = RoundedCornerShape(12.dp)
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(shape)
-                                .background(selColors.container)
-                                .border(
-                                    if (isHighContrast) 1.5.dp else if (isSelected) 1.dp else 0.5.dp,
-                                    selColors.border,
-                                    shape
-                                )
-                                .clickable {
-                                    selectedSourceIndex = index
-                                    showQualityDialog = false
-                                }
-                                .padding(12.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        imageVector = if (isSelected) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
-                                        contentDescription = null,
-                                        tint = selColors.content,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(10.dp))
-                                    Text(
-                                        text = source.resolution,
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                        color = selColors.content
-                                    )
-                                }
-                                source.formattedSize?.let { sz ->
-                                    Text(text = sz, style = MaterialTheme.typography.bodySmall.copy(color = selColors.secondaryContent))
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showQualityDialog = false }) {
-                    Text("Cancel", color = MaterialTheme.colorScheme.primary)
-                }
-            },
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-            shape = RoundedCornerShape(20.dp)
-        )
-    }
-
-    // SUBTITLES DIALOG
-    if (showSubtitleDialog) {
-        AlertDialog(
-            onDismissRequest = { showSubtitleDialog = false },
-            title = {
-                Column {
-                    Text(text = "Subtitles & Captions", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
-                    Spacer(modifier = Modifier.height(10.dp))
+                    // Header row
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = if (subtitleDialogTab == 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainer,
-                            modifier = Modifier
-                                .weight(1f)
-                                .clickable { subtitleDialogTab = 0 }
-                        ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (activePlayerSheet != "player_settings") {
+                                IconButton(
+                                    onClick = { activePlayerSheet = "player_settings" },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                        contentDescription = "Back",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(6.dp))
+                            }
                             Text(
-                                text = "Tracks",
-                                color = if (subtitleDialogTab == 0) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                text = when (activePlayerSheet) {
+                                    "player_settings" -> "Playback Settings"
+                                    "language" -> "Audio Dub Language"
+                                    "subtitle" -> "Select Subtitle"
+                                    "speed" -> "Playback Speed"
+                                    "quality" -> "Select Quality"
+                                    "episodes" -> "All Episodes (Season $viewingSeason)"
+                                    "cast" -> "Cast to TV"
+                                    "aspect" -> "Aspect Ratio"
+                                    else -> "Playback Settings"
+                                },
+                                fontSize = 16.sp,
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.padding(vertical = 8.dp)
+                                color = MaterialTheme.colorScheme.onSurface
                             )
                         }
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = if (subtitleDialogTab == 1) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainer,
-                            modifier = Modifier
-                                .weight(1f)
-                                .clickable { subtitleDialogTab = 1 }
+                        IconButton(
+                            onClick = { activePlayerSheet = null },
+                            modifier = Modifier.size(32.dp)
                         ) {
-                            Text(
-                                text = "Style & Transparency",
-                                color = if (subtitleDialogTab == 1) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.padding(vertical = 8.dp)
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Close",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp)
                             )
                         }
                     }
-                }
-            },
-            text = {
-                if (subtitleDialogTab == 0) {
-                    Column(
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 300.dp)
-                            .verticalScroll(rememberScrollState())
-                    ) {
-                        val isOffSelected = selectedCaptionIndex == -1
-                        val offColors = selectableColors(isOffSelected)
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = offColors.container,
-                            border = BorderStroke(if (isHighContrast) 1.5.dp else 0.5.dp, offColors.border),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    selectedCaptionIndex = -1
-                                    showSubtitleDialog = false
-                                }
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically
+
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 10.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+                    )
+
+                    when (activePlayerSheet) {
+                        "player_settings" -> {
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
-                                Icon(
-                                    imageVector = if (isOffSelected) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
-                                    contentDescription = null,
-                                    tint = offColors.content,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Text("Off", color = offColors.content, fontWeight = if (isOffSelected) FontWeight.Bold else FontWeight.Normal)
+                                // 0. Cast to TV
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .clickable { activePlayerSheet = "cast" }
+                                        .padding(horizontal = 8.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Filled.Tv, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(20.dp))
+                                        Spacer(modifier = Modifier.width(14.dp))
+                                        Text("Cast to TV", color = MaterialTheme.colorScheme.onSurface, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                                    }
+                                    Text("Not connected", color = MaterialTheme.colorScheme.primary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                }
+
+                                // 1. Audio Dub Language
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .clickable { activePlayerSheet = "language" }
+                                        .padding(horizontal = 8.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.AutoMirrored.Filled.VolumeUp, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(20.dp))
+                                        Spacer(modifier = Modifier.width(14.dp))
+                                        Text("Audio Dub Language", color = MaterialTheme.colorScheme.onSurface, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                                    }
+                                    val activeDubLabel = selectedDub?.lanName ?: currentAudioTrackName
+                                    Text(activeDubLabel, color = MaterialTheme.colorScheme.primary, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+
+                                // 2. Subtitles
+                                val currentSubName = if (selectedCaptionIndex >= 0) captions.getOrNull(selectedCaptionIndex)?.lanName ?: "On" else "Off"
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .clickable { activePlayerSheet = "subtitle" }
+                                        .padding(horizontal = 8.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Filled.ClosedCaption, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(20.dp))
+                                        Spacer(modifier = Modifier.width(14.dp))
+                                        Text("Subtitles", color = MaterialTheme.colorScheme.onSurface, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                                    }
+                                    Text(currentSubName, color = MaterialTheme.colorScheme.primary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                }
+
+                                // 3. Playback Speed
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .clickable { activePlayerSheet = "speed" }
+                                        .padding(horizontal = 8.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Filled.Speed, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(20.dp))
+                                        Spacer(modifier = Modifier.width(14.dp))
+                                        Text("Playback Speed", color = MaterialTheme.colorScheme.onSurface, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                                    }
+                                    Text("${playbackSpeed}x", color = MaterialTheme.colorScheme.primary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                }
+
+                                // 4. Video Quality
+                                val currentQualityLabel = currentSource?.resolution ?: "Auto"
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .clickable { activePlayerSheet = "quality" }
+                                        .padding(horizontal = 8.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Filled.Settings, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(20.dp))
+                                        Spacer(modifier = Modifier.width(14.dp))
+                                        Text("Video Quality", color = MaterialTheme.colorScheme.onSurface, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                                    }
+                                    Text(currentQualityLabel, color = MaterialTheme.colorScheme.primary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                }
+
+                                // 5. Episodes List (if isSeries)
+                                if (isSeries) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .clickable { activePlayerSheet = "episodes" }
+                                            .padding(horizontal = 8.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(20.dp))
+                                            Spacer(modifier = Modifier.width(14.dp))
+                                            Text("Episodes List", color = MaterialTheme.colorScheme.onSurface, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                                        }
+                                        Icon(Icons.Filled.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+                                    }
+                                }
+
+                                // 6. Aspect Ratio
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .clickable { activePlayerSheet = "aspect" }
+                                        .padding(horizontal = 8.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Filled.AspectRatio, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(20.dp))
+                                        Spacer(modifier = Modifier.width(14.dp))
+                                        Text("Aspect Ratio", color = MaterialTheme.colorScheme.onSurface, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                                    }
+                                    Text(currentResizeMode.label, color = MaterialTheme.colorScheme.primary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                }
                             }
                         }
 
-                        captions.forEachIndexed { index, caption ->
-                            val isHindi = caption.lan == "hi" ||
-                                    caption.lanName?.contains("हिन्दी") == true ||
-                                    caption.lanName?.contains("Hindi", ignoreCase = true) == true
-                            val isSelected = index == selectedCaptionIndex
-                            val capColors = selectableColors(isSelected)
-
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = capColors.container,
-                                border = BorderStroke(if (isHighContrast) 1.5.dp else if (isHindi || isSelected) 1.dp else 0.5.dp, capColors.border),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        selectedCaptionIndex = index
-                                        showSubtitleDialog = false
-                                    }
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        imageVector = if (isSelected) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
-                                        contentDescription = null,
-                                        tint = capColors.content,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(10.dp))
-                                    Text(
-                                        text = if (isHindi) "🇮🇳 हिन्दी (Hindi)" else (caption.lanName ?: caption.lan ?: "Subtitle"),
-                                        color = capColors.content,
-                                        fontWeight = if (isHindi || isSelected) FontWeight.Bold else FontWeight.Normal,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    if (isHindi) {
-                                        Surface(
-                                            shape = RoundedCornerShape(4.dp),
-                                            color = MaterialTheme.colorScheme.tertiaryContainer
-                                        ) {
-                                            Text(
-                                                text = "Hindi Sub",
-                                                color = MaterialTheme.colorScheme.onTertiaryContainer,
-                                                fontSize = 11.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                            )
+                        "speed" -> {
+                            val speeds = listOf(
+                                0.5f to "0.5x",
+                                0.75f to "0.75x",
+                                1.0f to "1.0x (Normal)",
+                                1.25f to "1.25x",
+                                1.5f to "1.5x",
+                                2.0f to "2.0x"
+                            )
+                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                speeds.chunked(2).forEach { rowSpeeds ->
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        rowSpeeds.forEach { (speedVal, speedLabel) ->
+                                            val isSelected = kotlin.math.abs(playbackSpeed - speedVal) < 0.05f
+                                            Button(
+                                                onClick = {
+                                                    playbackSpeed = speedVal
+                                                    exoPlayer.setPlaybackSpeed(speedVal)
+                                                    activePlayerSheet = null
+                                                },
+                                                colors = ButtonDefaults.buttonColors(
+                                                    containerColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHighest
+                                                ),
+                                                shape = RoundedCornerShape(8.dp),
+                                                modifier = Modifier.weight(1f).height(46.dp)
+                                            ) {
+                                                Text(
+                                                    text = speedLabel,
+                                                    color = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+                                                    fontSize = 13.sp,
+                                                    fontWeight = FontWeight.Medium
+                                                )
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
 
-                        if (captions.isEmpty()) {
-                            Text(
-                                text = "No subtitle tracks available for this title.",
-                                style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurfaceVariant),
-                                modifier = Modifier.padding(vertical = 8.dp)
-                            )
-                        }
-                    }
-                } else {
-                    // Style & Transparency Controls
-                    Column(
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 350.dp)
-                            .verticalScroll(rememberScrollState())
-                    ) {
-                        Text(
-                            text = "Live Preview",
-                            style = MaterialTheme.typography.labelMedium.copy(color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Bold)
-                        )
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainer,
-                            border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Box(
+                        "quality" -> {
+                            Column(
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(vertical = 14.dp, horizontal = 8.dp),
-                                contentAlignment = Alignment.Center
+                                    .heightIn(max = 340.dp)
+                                    .verticalScroll(rememberScrollState())
                             ) {
-                                Surface(
-                                    shape = RoundedCornerShape(6.dp),
-                                    color = Color.Black.copy(alpha = captionBgOpacity) // legibility-ok: subtitles
-                                ) {
-                                    Text(
-                                        text = "Sample Subtitle / ক্যাপশন প্রিভিউ",
-                                        style = MaterialTheme.typography.bodyMedium.copy(
-                                            color = Color.White.copy(alpha = captionTextOpacity), // legibility-ok: subtitles
-                                            fontWeight = FontWeight.Bold,
-                                            shadow = if (captionBgOpacity < 0.40f) {
-                                                Shadow(
-                                                    color = Color.Black.copy(alpha = 0.95f), // legibility-ok: subtitles
-                                                    offset = Offset(2f, 2f),
-                                                    blurRadius = 4f
+                                sources.forEachIndexed { index, source ->
+                                    val isSelected = index == selectedSourceIndex
+                                    Surface(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .clickable {
+                                                selectedSourceIndex = index
+                                                try {
+                                                    val resDigits = source.resolution.filter { it.isDigit() }.toIntOrNull()
+                                                    val (maxW, maxH) = when (resDigits) {
+                                                        1080 -> 1920 to 1080
+                                                        720 -> 1280 to 720
+                                                        480 -> 854 to 480
+                                                        360 -> 640 to 360
+                                                        else -> Int.MAX_VALUE to Int.MAX_VALUE
+                                                    }
+                                                    exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
+                                                        .buildUpon()
+                                                        .setMaxVideoSize(maxW, maxH)
+                                                        .build()
+                                                } catch (_: Exception) {}
+
+                                                if (sources.getOrNull(index)?.url != currentSource?.url) {
+                                                    streamReloadTrigger++
+                                                }
+                                                activePlayerSheet = null
+                                            },
+                                        color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHighest,
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(
+                                                    imageVector = if (isSelected) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                                                    contentDescription = null,
+                                                    tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    modifier = Modifier.size(18.dp)
                                                 )
-                                            } else null
-                                        ),
-                                        modifier = Modifier.padding(
-                                            horizontal = if (captionBgOpacity > 0.05f) 10.dp else 4.dp,
-                                            vertical = if (captionBgOpacity > 0.05f) 5.dp else 2.dp
-                                        ),
-                                        textAlign = TextAlign.Center
-                                    )
-                                }
-                            }
-                        }
-
-                        // Background Transparency Controls
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text(
-                                    text = "Background Opacity",
-                                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
-                                )
-                                Text(
-                                    text = "${(captionBgOpacity * 100).roundToInt()}% (${if (captionBgOpacity == 0f) "Transparent" else if (captionBgOpacity >= 0.95f) "Solid" else "${(100 - (captionBgOpacity * 100)).roundToInt()}% transparent"})",
-                                    style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-                                )
-                            }
-                            Slider(
-                                value = captionBgOpacity,
-                                onValueChange = { newVal ->
-                                    captionBgOpacity = newVal
-                                    CaptionPreferences.setBackgroundOpacity(context, newVal)
-                                },
-                                valueRange = 0.0f..1.0f,
-                                colors = SliderDefaults.colors(
-                                    thumbColor = accentColor,
-                                    activeTrackColor = accentColor,
-                                    inactiveTrackColor = MaterialTheme.colorScheme.surfaceContainerHighest
-                                )
-                            )
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                listOf(
-                                    0.0f to "0% None",
-                                    0.25f to "25%",
-                                    0.50f to "50%",
-                                    0.75f to "75%",
-                                    1.0f to "Solid"
-                                ).forEach { (preset, label) ->
-                                    val isSelected = kotlin.math.abs(captionBgOpacity - preset) < 0.06f
-                                    val presetColors = selectableColors(isSelected)
-                                    Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = presetColors.container,
-                                        border = if (isSelected || isHighContrast) BorderStroke(1.dp, presetColors.border) else null,
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .clickable {
-                                                captionBgOpacity = preset
-                                                CaptionPreferences.setBackgroundOpacity(context, preset)
+                                                Spacer(modifier = Modifier.width(12.dp))
+                                                Text(
+                                                    text = source.resolution,
+                                                    color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+                                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                                    fontSize = 14.sp
+                                                )
                                             }
-                                    ) {
-                                        Text(
-                                            text = label,
-                                            color = presetColors.content,
-                                            fontSize = 11.sp,
-                                            textAlign = TextAlign.Center,
-                                            modifier = Modifier.padding(vertical = 5.dp)
-                                        )
+                                            source.formattedSize?.let { size ->
+                                                Text(
+                                                    text = size,
+                                                    color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    fontSize = 12.sp
+                                                )
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
 
-                        // Text Transparency Controls
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
+                        "subtitle" -> {
+                            var subTab by remember { mutableIntStateOf(0) }
+                            Column(
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 380.dp)
+                                    .verticalScroll(rememberScrollState())
                             ) {
-                                Text(
-                                    text = "Text Opacity",
-                                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
-                                )
-                                Text(
-                                    text = "${(captionTextOpacity * 100).roundToInt()}% (${(100 - (captionTextOpacity * 100)).roundToInt()}% transparent)",
-                                    style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-                                )
-                            }
-                            Slider(
-                                value = captionTextOpacity,
-                                onValueChange = { newVal ->
-                                    captionTextOpacity = newVal
-                                    CaptionPreferences.setTextOpacity(context, newVal)
-                                },
-                                valueRange = 0.2f..1.0f,
-                                colors = SliderDefaults.colors(
-                                    thumbColor = accentColor,
-                                    activeTrackColor = accentColor,
-                                    inactiveTrackColor = MaterialTheme.colorScheme.surfaceContainerHighest
-                                )
-                            )
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                listOf(
-                                    0.35f to "35%",
-                                    0.50f to "50%",
-                                    0.70f to "70%",
-                                    0.85f to "85%",
-                                    1.0f to "100%"
-                                ).forEach { (preset, label) ->
-                                    val isSelected = kotlin.math.abs(captionTextOpacity - preset) < 0.06f
-                                    val presetColors = selectableColors(isSelected)
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Button(
+                                        onClick = { subTab = 0 },
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = if (subTab == 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHighest
+                                        ),
+                                        shape = RoundedCornerShape(8.dp),
+                                        modifier = Modifier.weight(1f).height(40.dp)
+                                    ) {
+                                        Text("Tracks", color = if (subTab == 0) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface, fontSize = 13.sp)
+                                    }
+                                    Button(
+                                        onClick = { subTab = 1 },
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = if (subTab == 1) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHighest
+                                        ),
+                                        shape = RoundedCornerShape(8.dp),
+                                        modifier = Modifier.weight(1f).height(40.dp)
+                                    ) {
+                                        Text("Style & Opacity", color = if (subTab == 1) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface, fontSize = 13.sp)
+                                    }
+                                }
+
+                                if (subTab == 0) {
+                                    val isOffSelected = selectedCaptionIndex == -1
                                     Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = presetColors.container,
-                                        border = if (isSelected || isHighContrast) BorderStroke(1.dp, presetColors.border) else null,
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = if (isOffSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHighest,
                                         modifier = Modifier
-                                            .weight(1f)
+                                            .fillMaxWidth()
                                             .clickable {
-                                                captionTextOpacity = preset
-                                                CaptionPreferences.setTextOpacity(context, preset)
+                                                selectedCaptionIndex = -1
+                                                activePlayerSheet = null
                                             }
                                     ) {
-                                        Text(
-                                            text = label,
-                                            color = presetColors.content,
-                                            fontSize = 11.sp,
-                                            textAlign = TextAlign.Center,
-                                            modifier = Modifier.padding(vertical = 5.dp)
-                                        )
+                                        Row(
+                                            modifier = Modifier.padding(12.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                imageVector = if (isOffSelected) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                                                contentDescription = null,
+                                                tint = if (isOffSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(10.dp))
+                                            Text("None / Off", color = if (isOffSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface, fontWeight = if (isOffSelected) FontWeight.Bold else FontWeight.Normal)
+                                        }
+                                    }
+
+                                    captions.forEachIndexed { index, caption ->
+                                        val isSelected = index == selectedCaptionIndex
+                                        val isHindi = caption.lan == "hi" ||
+                                                caption.lanName?.contains("हिन्दी") == true ||
+                                                caption.lanName?.contains("Hindi", ignoreCase = true) == true
+                                        val label = if (isHindi) "🇮🇳 हिन्दी (Hindi)" else (caption.lanName ?: caption.lan ?: "Subtitle ${index + 1}")
+                                        Surface(
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHighest,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    selectedCaptionIndex = index
+                                                    activePlayerSheet = null
+                                                }
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(12.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Icon(
+                                                    imageVector = if (isSelected) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                                                    contentDescription = null,
+                                                    tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(10.dp))
+                                                Text(label, color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal)
+                                            }
+                                        }
+                                    }
+
+                                    if (captions.isEmpty()) {
+                                        Text("No online subtitle tracks available.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, modifier = Modifier.padding(8.dp))
+                                    }
+                                } else {
+                                    // Subtitle styling
+                                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        // Preview
+                                        Surface(
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = Color.Black.copy(alpha = captionBgOpacity), // legibility-ok: player sheet
+                                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                                        ) {
+                                            Text(
+                                                text = "Subtitle Preview / স্যাম্পল সাবটাইটেল",
+                                                color = Color.White.copy(alpha = captionTextOpacity), // legibility-ok: player sheet
+                                                fontWeight = FontWeight.Bold,
+                                                textAlign = TextAlign.Center,
+                                                modifier = Modifier.padding(8.dp)
+                                            )
+                                        }
+                                        // Bg Opacity
+                                        Text("Background Opacity: ${(captionBgOpacity * 100).toInt()}%", color = MaterialTheme.colorScheme.onSurface, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            listOf(0.0f to "0%", 0.25f to "25%", 0.50f to "50%", 0.75f to "75%", 1.0f to "Solid").forEach { (v, lbl) ->
+                                                val isCur = kotlin.math.abs(captionBgOpacity - v) < 0.06f
+                                                Button(
+                                                    onClick = {
+                                                        captionBgOpacity = v
+                                                        CaptionPreferences.setBackgroundOpacity(context, v)
+                                                    },
+                                                    colors = ButtonDefaults.buttonColors(
+                                                        containerColor = if (isCur) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHighest
+                                                    ),
+                                                    shape = RoundedCornerShape(6.dp),
+                                                    modifier = Modifier.weight(1f).height(34.dp),
+                                                    contentPadding = PaddingValues(0.dp)
+                                                ) {
+                                                    Text(lbl, color = if (isCur) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface, fontSize = 11.sp)
+                                                }
+                                            }
+                                        }
+                                        // Text Opacity
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text("Text Opacity: ${(captionTextOpacity * 100).toInt()}%", color = MaterialTheme.colorScheme.onSurface, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            listOf(0.35f to "35%", 0.50f to "50%", 0.70f to "70%", 0.85f to "85%", 1.0f to "100%").forEach { (v, lbl) ->
+                                                val isCur = kotlin.math.abs(captionTextOpacity - v) < 0.06f
+                                                Button(
+                                                    onClick = {
+                                                        captionTextOpacity = v
+                                                        CaptionPreferences.setTextOpacity(context, v)
+                                                    },
+                                                    colors = ButtonDefaults.buttonColors(
+                                                        containerColor = if (isCur) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHighest
+                                                    ),
+                                                    shape = RoundedCornerShape(6.dp),
+                                                    modifier = Modifier.weight(1f).height(34.dp),
+                                                    contentPadding = PaddingValues(0.dp)
+                                                ) {
+                                                    Text(lbl, color = if (isCur) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface, fontSize = 11.sp)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        "language" -> {
+                            Column(
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 340.dp)
+                                    .verticalScroll(rememberScrollState())
+                            ) {
+                                if (dubs.isNotEmpty()) {
+                                    dubs.forEach { dub ->
+                                        val isSelected = (selectedDub != null && dub.subjectId == selectedDub.subjectId) ||
+                                                (selectedDub == null && dub.isOriginal)
+                                        Surface(
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHighest,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    onDubSelected?.invoke(dub)
+                                                    activePlayerSheet = null
+                                                }
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(14.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    Icon(
+                                                        imageVector = if (isSelected) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                                                        contentDescription = null,
+                                                        tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(12.dp))
+                                                    Text(
+                                                        text = dub.lanName,
+                                                        color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+                                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                                        fontSize = 14.sp
+                                                    )
+                                                }
+                                                if (dub.isOriginal) {
+                                                    Surface(
+                                                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
+                                                        shape = RoundedCornerShape(4.dp)
+                                                    ) {
+                                                        Text(
+                                                            text = "ORIGINAL",
+                                                            color = MaterialTheme.colorScheme.primary,
+                                                            fontSize = 10.sp,
+                                                            fontWeight = FontWeight.Bold,
+                                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else if (audioTracks.isEmpty()) {
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = MaterialTheme.colorScheme.primaryContainer,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                                            Spacer(modifier = Modifier.width(12.dp))
+                                            Text("Original Audio (Default)", color = MaterialTheme.colorScheme.onPrimaryContainer, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                        }
+                                    }
+                                } else {
+                                    audioTracks.forEach { track ->
+                                        Surface(
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = if (track.isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHighest,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    try {
+                                                        exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
+                                                            .buildUpon()
+                                                            .setOverrideForType(
+                                                                androidx.media3.common.TrackSelectionOverride(
+                                                                    exoPlayer.currentTracks.groups[track.groupIndex].mediaTrackGroup,
+                                                                    track.trackIndex
+                                                                )
+                                                            )
+                                                            .build()
+                                                    } catch (_: Exception) {}
+                                                    activePlayerSheet = null
+                                                }
+                                        ) {
+                                            Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(
+                                                    imageVector = if (track.isSelected) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                                                    contentDescription = null,
+                                                    tint = if (track.isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(12.dp))
+                                                Text(track.name, color = if (track.isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface, fontWeight = if (track.isSelected) FontWeight.Bold else FontWeight.Normal, fontSize = 14.sp)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        "episodes" -> {
+                            val epsCount = availableSeasons.firstOrNull { it.se == viewingSeason }?.maxEp ?: totalEpisodes.coerceAtLeast(1)
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 360.dp)
+                                    .verticalScroll(rememberScrollState())
+                            ) {
+                                if (availableSeasons.size > 1) {
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        modifier = Modifier.padding(bottom = 12.dp)
+                                    ) {
+                                        availableSeasons.forEach { s ->
+                                            val isCurSeason = s.se == viewingSeason
+                                            Button(
+                                                onClick = { viewingSeason = s.se },
+                                                colors = ButtonDefaults.buttonColors(
+                                                    containerColor = if (isCurSeason) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHighest
+                                                ),
+                                                shape = RoundedCornerShape(8.dp),
+                                                modifier = Modifier.height(36.dp),
+                                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
+                                            ) {
+                                                Text("Season ${s.se}", color = if (isCurSeason) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface, fontSize = 12.sp)
+                                            }
+                                        }
+                                    }
+                                }
+
+                                val episodeList = (1..epsCount).toList()
+                                episodeList.chunked(4).forEach { rowEps ->
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        rowEps.forEach { epNum ->
+                                            val isCur = viewingSeason == currentSeason && epNum == currentEpisode
+                                            Button(
+                                                onClick = {
+                                                    activePlayerSheet = null
+                                                    onSelectEpisode(viewingSeason, epNum)
+                                                },
+                                                colors = ButtonDefaults.buttonColors(
+                                                    containerColor = if (isCur) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHighest
+                                                ),
+                                                shape = RoundedCornerShape(8.dp),
+                                                modifier = Modifier.weight(1f).height(44.dp)
+                                            ) {
+                                                Text(
+                                                    text = epNum.toString().padStart(2, '0'),
+                                                    color = if (isCur) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+                                                    fontSize = 13.sp,
+                                                    fontWeight = if (isCur) FontWeight.Bold else FontWeight.Medium
+                                                )
+                                            }
+                                        }
+                                        if (rowEps.size < 4) {
+                                            Spacer(modifier = Modifier.weight((4 - rowEps.size).toFloat()))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        "cast" -> {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            activePlayerSheet = null
+                                            try {
+                                                val intent = android.content.Intent(android.provider.Settings.ACTION_CAST_SETTINGS).apply {
+                                                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                }
+                                                context.startActivity(intent)
+                                            } catch (_: Exception) {
+                                                try {
+                                                    val intent = android.content.Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS).apply {
+                                                        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                    }
+                                                    context.startActivity(intent)
+                                                } catch (e: Exception) {
+                                                    android.widget.Toast.makeText(context, "Could not open Cast settings", android.widget.Toast.LENGTH_SHORT).show()
+                                                }
+                                            }
+                                        }
+                                ) {
+                                    Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Filled.Tv, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
+                                        Spacer(modifier = Modifier.width(14.dp))
+                                        Column {
+                                            Text("Wireless Display / Cast Screen", color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                            Text("Mirror to Chromecast, Android TV, Fire TV, or Smart TV", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                                        }
+                                    }
+                                }
+
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            activePlayerSheet = null
+                                            val streamUrl = currentSource?.directUrl ?: currentSource?.url
+                                            if (!streamUrl.isNullOrBlank()) {
+                                                try {
+                                                    val sendIntent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+                                                        setDataAndType(android.net.Uri.parse(streamUrl), "video/*")
+                                                        putExtra("title", title)
+                                                        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                    }
+                                                    context.startActivity(android.content.Intent.createChooser(sendIntent, "Cast / Stream with...").apply {
+                                                        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                    })
+                                                } catch (_: Exception) {
+                                                    android.widget.Toast.makeText(context, "No external caster app found", android.widget.Toast.LENGTH_SHORT).show()
+                                                }
+                                            } else {
+                                                android.widget.Toast.makeText(context, "No stream URL available", android.widget.Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                ) {
+                                    Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Filled.CastConnected, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
+                                        Spacer(modifier = Modifier.width(14.dp))
+                                        Column {
+                                            Text("Stream in External Player / Caster", color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                            Text("Cast via Web Video Caster, BubbleUPnP, or VLC", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                                        }
+                                    }
+                                }
+
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            activePlayerSheet = null
+                                            val streamUrl = currentSource?.directUrl ?: currentSource?.url
+                                            if (!streamUrl.isNullOrBlank()) {
+                                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+                                                clipboard?.setPrimaryClip(android.content.ClipData.newPlainText("Stream URL", streamUrl))
+                                                android.widget.Toast.makeText(context, "Stream URL copied to clipboard", android.widget.Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                ) {
+                                    Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Filled.ContentCopy, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
+                                        Spacer(modifier = Modifier.width(14.dp))
+                                        Column {
+                                            Text("Copy Direct Stream Link", color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                            Text("Paste into network player, TV browser, or Kodi", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        "aspect" -> {
+                            val modes = listOf(
+                                ResizeMode.FIT to ("Fit (Original)" to "Preserves aspect ratio with letterboxing"),
+                                ResizeMode.ZOOM to ("Crop / Fill (Zoom)" to "Fills the entire screen without black bars"),
+                                ResizeMode.FILL to ("Stretch" to "Stretches the picture to fit 16:9")
+                            )
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                modes.forEach { (mode, pair) ->
+                                    val (name, desc) = pair
+                                    val isCur = currentResizeMode == mode
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = if (isCur) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHighest,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                currentResizeMode = mode
+                                                activePlayerSheet = null
+                                            }
+                                    ) {
+                                        Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(
+                                                imageVector = if (isCur) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                                                contentDescription = null,
+                                                tint = if (isCur) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(12.dp))
+                                            Column {
+                                                Text(name, color = if (isCur) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                                Text(desc, color = if (isCur) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 }
-            },
-            confirmButton = {
-                TextButton(onClick = { showSubtitleDialog = false }) {
-                    Text("Done", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-                }
-            },
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
-        )
+            }
+        }
     }
-
-    // SPEED DIALOG
-    if (showSpeedDialog) {
-        val speeds = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f)
-        AlertDialog(
-            onDismissRequest = { showSpeedDialog = false },
-            title = { Text(text = "Playback Speed", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    speeds.forEach { speed ->
-                        val isSelected = playbackSpeed == speed
-                        val selColors = selectableColors(isSelected)
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = selColors.container,
-                            border = BorderStroke(if (isHighContrast) 1.5.dp else if (isSelected) 1.dp else 0.5.dp, selColors.border),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    playbackSpeed = speed
-                                    exoPlayer.setPlaybackSpeed(speed)
-                                    showSpeedDialog = false
-                                }
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    imageVector = if (isSelected) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
-                                    contentDescription = null,
-                                    tint = selColors.content,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Text("${speed}x", color = selColors.content, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal)
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showSpeedDialog = false }) {
-                    Text("Cancel", color = MaterialTheme.colorScheme.primary)
-                }
-            },
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
-        )
-    }
+}
 }
 
 private fun formatTime(millis: Long): String {

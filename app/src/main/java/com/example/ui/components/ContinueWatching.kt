@@ -177,63 +177,17 @@ fun ContinueWatchingCard(
                 }
             }
     ) {
-        // Thumbnail logic: check aspect ratio
-        var detectedRatio by remember(history.posterUrl) {
-            mutableStateOf(PosterAspectCache.getRatio(history.posterUrl))
-        }
-        val category = PosterAspectCache.classify(detectedRatio)
-        
-        // If close to 16:9 (1.777), fill bounds. Otherwise Fit with ambient background
-        val isCloseTo16By9 = detectedRatio != null && Math.abs(detectedRatio!! - 1.777f) < 0.05f
-
-        if (isCloseTo16By9) {
-            AsyncImage(
-                model = ImageRequest.Builder(LocalContext.current)
-                    .data(history.posterUrl)
-                    .crossfade(true)
-                    .build(),
-                contentDescription = null,
-                contentScale = ContentScale.FillBounds,
-                modifier = Modifier.fillMaxSize()
-            )
-        } else {
-            // Ambient background layer
-            AsyncImage(
-                model = ImageRequest.Builder(LocalContext.current)
-                    .data(history.posterUrl)
-                    .size(64, 36)
-                    .crossfade(true)
-                    .build(),
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
-            )
-            // Black overlay over ambient background
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.45f)) // legibility-ok: ambient backdrop
-            )
-            // Main image fitted
-            AsyncImage(
-                model = ImageRequest.Builder(LocalContext.current)
-                    .data(history.posterUrl)
-                    .crossfade(true)
-                    .build(),
-                contentDescription = null,
-                contentScale = ContentScale.Fit,
-                alignment = Alignment.Center,
-                onSuccess = { state ->
-                    val d = state.result.drawable
-                    if (d.intrinsicWidth > 0 && d.intrinsicHeight > 0) {
-                        val r = d.intrinsicWidth.toFloat() / d.intrinsicHeight.toFloat()
-                        PosterAspectCache.putRatio(history.posterUrl, r)
-                        detectedRatio = r
-                    }
-                },
-                modifier = Modifier.fillMaxSize()
-            )
-        }
+        // Full-bleed landscape poster image filling the entire 16:9 card
+        AsyncImage(
+            model = ImageRequest.Builder(LocalContext.current)
+                .data(history.posterUrl)
+                .crossfade(true)
+                .build(),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            alignment = Alignment.Center,
+            modifier = Modifier.fillMaxSize()
+        )
 
         // Gradient Scrim
         Box(

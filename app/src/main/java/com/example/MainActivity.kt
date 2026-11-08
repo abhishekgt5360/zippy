@@ -43,6 +43,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.data.model.DubItem
 import com.example.ui.*
 import com.example.ui.components.DevCreditDialog
 import com.example.ui.screens.catalog.CatalogScreen
@@ -277,7 +278,9 @@ fun MainApp(
                     onBackClick = { showAppearanceScreen = false },
                     isAdultEnabled = isAdultEnabled,
                     onAdultToggle = { enabled -> viewModel.setAdultEnabled(enabled) },
-                    onOpenDevCredit = { showDevCreditDialog = true }
+                    onOpenDevCredit = { showDevCreditDialog = true },
+                    tmdbApiKey = viewModel.tmdbApiKey.collectAsStateWithLifecycle().value,
+                    onTmdbApiKeySave = { viewModel.setTmdbApiKey(it) }
                 )
             } else if (isDetailOpen) {
                 DetailScreen(
@@ -317,6 +320,9 @@ fun MainApp(
                     },
                     onMovieClick = { movie ->
                         viewModel.openDetail(movie)
+                    },
+                    onSelectDub = { dub ->
+                        viewModel.switchDub(dub, exoPlayer.currentPosition)
                     }
                 )
             } else {

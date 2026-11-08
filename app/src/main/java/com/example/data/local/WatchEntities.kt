@@ -196,6 +196,9 @@ interface WatchDao {
 
     @Query("DELETE FROM content_mappings WHERE expiresAt < :now")
     suspend fun deleteExpiredMappings(now: Long)
+
+    @Query("DELETE FROM content_mappings")
+    suspend fun clearAllMappings()
 }
 
 val MIGRATION_1_2 = object : androidx.room.migration.Migration(1, 2) {

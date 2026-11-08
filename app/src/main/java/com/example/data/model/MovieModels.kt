@@ -2,6 +2,23 @@ package com.example.data.model
 
 import com.squareup.moshi.Json
 
+enum class ContentSourceIndicator {
+    NONE,
+    TMDB,
+    MOVIEBOX,
+    MIXED
+}
+
+fun computeSourceIndicator(items: Collection<MovieItem>): ContentSourceIndicator {
+    if (items.isEmpty()) return ContentSourceIndicator.NONE
+    val tmdbCount = items.count { it.isFromTmdb }
+    return when {
+        tmdbCount == items.size -> ContentSourceIndicator.TMDB
+        tmdbCount == 0 -> ContentSourceIndicator.MOVIEBOX
+        else -> ContentSourceIndicator.MIXED
+    }
+}
+
 data class HealthResponse(
     val status: String? = null,
     val time: String? = null
@@ -36,7 +53,8 @@ data class MovieItem(
     val tmdbMediaType: String? = null,
     val tmdbOriginalTitle: String? = null,
     val tmdbOriginalLanguage: String? = null,
-    val tmdbCountry: String? = null
+    val tmdbCountry: String? = null,
+    @Json(name = "backdrop_url") val backdropUrl: String? = null
 ) {
     constructor(
         name: String? = "",
@@ -52,7 +70,8 @@ data class MovieItem(
         tmdbMediaType: String? = null,
         tmdbOriginalTitle: String? = null,
         tmdbOriginalLanguage: String? = null,
-        tmdbCountry: String? = null
+        tmdbCountry: String? = null,
+        backdropUrl: String? = null
     ) : this(
         name = name,
         posterUrl = posterUrl,
@@ -69,7 +88,8 @@ data class MovieItem(
         tmdbMediaType = tmdbMediaType,
         tmdbOriginalTitle = tmdbOriginalTitle,
         tmdbOriginalLanguage = tmdbOriginalLanguage,
-        tmdbCountry = tmdbCountry
+        tmdbCountry = tmdbCountry,
+        backdropUrl = backdropUrl
     )
 
     val subjectId: String
@@ -119,7 +139,16 @@ data class MovieItem(
         }
 
     val isTvSeries: Boolean
-        get() = type.equals("tv", ignoreCase = true) || type.equals("tv-series", ignoreCase = true)
+        get() {
+            if (type.equals("tv", ignoreCase = true) || type.equals("tv-series", ignoreCase = true)) {
+                return true
+            }
+            if (type.equals("movie", ignoreCase = true)) {
+                return false
+            }
+            val n = safeName.lowercase(java.util.Locale.ROOT)
+            return n.contains(Regex("""\b(s\d+(-s\d+)?|season\s*\d+|series|episodes?)\b"""))
+        }
 }
 
 /**
@@ -204,10 +233,18 @@ data class DetailResponse(
     val data: DetailData? = null
 )
 
+data class DubItem(
+    val subjectId: String,
+    val lanName: String,
+    val lanCode: String? = null,
+    val isOriginal: Boolean = false
+)
+
 data class DetailData(
     val subject: SubjectDetail? = null,
     val stars: List<StarItem>? = null,
-    val resource: ResourceDetail? = null
+    val resource: ResourceDetail? = null,
+    val dubs: List<DubItem>? = null
 )
 
 data class SubjectDetail(
@@ -224,7 +261,8 @@ data class SubjectDetail(
     val hasResource: Boolean? = true,
     val cover: CoverDetail? = null,
     val trailer: TrailerDetail? = null,
-    @Json(name = "isPornographic") val isPornographic: Boolean? = null
+    @Json(name = "isPornographic") val isPornographic: Boolean? = null,
+    val dubs: List<DubItem>? = null
 ) {
     val subjectId: String?
         get() = rawSubjectId?.toString()
@@ -329,11 +367,9 @@ data class StreamResponse(
         get() = rawSubjectId?.toString()
 
     val hasUsableStreams: Boolean
-        get() = hasResource && (
-            sources.any { it.url.isNotBlank() } ||
+        get() = sources.any { it.url.isNotBlank() } ||
             hls.any { !it.url.isNullOrBlank() } ||
             dash.any { !it.url.isNullOrBlank() }
-        )
 
     val effectiveSources: List<StreamSource>
         get() {
@@ -360,8 +396,13 @@ data class StreamSource(
     val url: String = "",
     @Json(name = "size") val rawSize: Any? = null,
     @Json(name = "duration") val rawDuration: Any? = null,
-    val codec: String? = null
+    val codec: String? = null,
+    val directUrl: String? = null,
+    val cookie: String? = null,
+    val headers: Map<String, String>? = null
 ) {
+    val playbackUrl: String
+        get() = directUrl?.takeIf { it.isNotBlank() } ?: url
     val size: String?
         get() = rawSize?.toString()
 

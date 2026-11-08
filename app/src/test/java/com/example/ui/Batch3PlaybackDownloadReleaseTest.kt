@@ -165,7 +165,7 @@ class Batch3PlaybackDownloadReleaseTest {
         assertTrue(result.isSuccess)
         val stream = result.getOrThrow()
         assertEquals(1, stream.sources.size)
-        assertEquals("https://cdn.example.com/valid.mp4", stream.sources.first().url)
+        assertEquals("https://cdn.example.com/valid.mp4", stream.sources.first().directUrl ?: stream.sources.first().url)
     }
 
     @Test
@@ -379,5 +379,96 @@ class Batch3PlaybackDownloadReleaseTest {
         assertEquals(3, history.episode)
         assertEquals(90_000L, history.positionMs)
         assertEquals(1396L, history.tmdbId)
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // HOTFIX: TMDB SOURCE INDICATOR & PLAYBACK ROUTING
+    // ---------------------------------------------------------------------------------------------
+
+    @Test
+    fun `test ContentSourceIndicator accurately reflects displayed content`() {
+        val tmdbItems = listOf(
+            MovieItem(name = "Inception", tmdbId = 27205L, slug = "tmdb_movie_27205"),
+            MovieItem(name = "Interstellar", tmdbId = 157336L, slug = "tmdb_movie_157336")
+        )
+        val movieboxItems = listOf(
+            MovieItem(name = "Local Film 1", slug = "local-1", rawSubjectId = "1001"),
+            MovieItem(name = "Local Film 2", slug = "local-2", rawSubjectId = "1002")
+        )
+
+        assertEquals(ContentSourceIndicator.TMDB, com.example.data.model.computeSourceIndicator(tmdbItems))
+        assertEquals(ContentSourceIndicator.MOVIEBOX, com.example.data.model.computeSourceIndicator(movieboxItems))
+        assertEquals(ContentSourceIndicator.MIXED, com.example.data.model.computeSourceIndicator(tmdbItems + movieboxItems))
+        assertEquals(ContentSourceIndicator.NONE, com.example.data.model.computeSourceIndicator(emptyList()))
+
+        val homeTmdbState = com.example.ui.HomeUiState(
+            isLoading = false,
+            bannerItems = tmdbItems.take(1),
+            sections = listOf(com.example.data.model.HomeSection("Trending", items = tmdbItems))
+        )
+        assertEquals(ContentSourceIndicator.TMDB, homeTmdbState.effectiveSourceIndicator)
+
+        val homeFallbackState = com.example.ui.HomeUiState(
+            isLoading = false,
+            bannerItems = movieboxItems.take(1),
+            sections = listOf(com.example.data.model.HomeSection("Popular", items = movieboxItems))
+        )
+        assertEquals(ContentSourceIndicator.MOVIEBOX, homeFallbackState.effectiveSourceIndicator)
+
+        val homeEmptyState = com.example.ui.HomeUiState(
+            isLoading = false,
+            bannerItems = emptyList(),
+            sections = emptyList()
+        )
+        assertEquals(ContentSourceIndicator.NONE, homeEmptyState.effectiveSourceIndicator)
+    }
+
+    @Test
+    fun `test verified MovieBox IDs directly initiate playback without recursion even with tmdbId`() = runBlocking {
+        fakeApi.streamToReturn = StreamResponse(
+            subjectId = "verified_mb_123",
+            hasResource = true,
+            sources = listOf(
+                StreamSource(resolution = "1080p", format = "MP4", url = "https://cdn.example.com/movie.mp4")
+            )
+        )
+
+        // Directly invoke getStream with verified MovieBox credentials
+        val result = repository.getStream(
+            subjectId = "123456",
+            slug = "verified-slug-movie",
+            season = 0,
+            episode = 0,
+            isSeries = false
+        )
+
+        assertTrue(result.isSuccess)
+        val stream = result.getOrNull()
+        assertNotNull(stream)
+        assertTrue(stream!!.hasUsableStreams)
+        assertEquals(1, stream.sources.size)
+        assertEquals("video/mp4", stream.sources.first().resolveMimeType())
+    }
+
+    @Test
+    fun `test StreamSource resolveMimeType with query parameters stripped`() {
+        val hlsSource = StreamSource(url = "https://cdn.example.com/playlist.m3u8?token=xyz123&expire=9999", format = null)
+        val dashSource = StreamSource(url = "https://cdn.example.com/manifest.mpd?auth=bearer456", format = null)
+        val mp4Source = StreamSource(url = "https://cdn.example.com/video.mp4?sig=abc789", format = null)
+        val mkvSource = StreamSource(url = "https://cdn.example.com/media.mkv?key=secret", format = null)
+
+        assertEquals("application/x-mpegURL", hlsSource.resolveMimeType())
+        assertEquals("application/dash+xml", dashSource.resolveMimeType())
+        assertEquals("video/mp4", mp4Source.resolveMimeType())
+        assertEquals("video/x-matroska", mkvSource.resolveMimeType())
+
+        // Explicit format takes precedence over extension
+        val explicitHls = StreamSource(url = "https://cdn.example.com/stream?raw=true", format = "HLS")
+        val explicitDash = StreamSource(url = "https://cdn.example.com/stream?raw=true", format = "DASH")
+        val explicitMp4 = StreamSource(url = "https://cdn.example.com/stream?raw=true", format = "MP4")
+
+        assertEquals("application/x-mpegURL", explicitHls.resolveMimeType())
+        assertEquals("application/dash+xml", explicitDash.resolveMimeType())
+        assertEquals("video/mp4", explicitMp4.resolveMimeType())
     }
 }

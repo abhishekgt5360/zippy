@@ -1,19 +1,19 @@
 package com.example.ui.screens.appearance
 
 import android.os.Build
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -21,14 +21,13 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -36,9 +35,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.example.ui.theme.HighContrastScheme
-import com.example.ui.theme.OledScheme
-import com.example.ui.theme.PaperScheme
+import androidx.compose.ui.unit.sp
 import com.example.ui.theme.ThemeMode
 import com.example.util.DevCreditManager
 import com.example.util.ResumeNoticePosition
@@ -55,6 +52,14 @@ fun ThemeMode.getDisplayName(): String = when (this) {
     ThemeMode.PAPER -> "Paper"
 }
 
+fun ThemeMode.getDescription(): String = when (this) {
+    ThemeMode.CRIMSON -> "Classic deep cinematic theme with crimson accents"
+    ThemeMode.OLED -> "Pure true-black background optimized for OLED displays"
+    ThemeMode.DYNAMIC -> "Adapts to your Android system wallpaper colors"
+    ThemeMode.HIGH_CONTRAST -> "High readability with reinforced borders & contrasts"
+    ThemeMode.PAPER -> "Warm reader-friendly tint with softened contrast"
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AppearanceScreen(
@@ -63,21 +68,31 @@ fun AppearanceScreen(
     onBackClick: () -> Unit,
     isAdultEnabled: Boolean = false,
     onAdultToggle: (Boolean) -> Unit = {},
-    onOpenDevCredit: () -> Unit = {}
+    onOpenDevCredit: () -> Unit = {},
+    tmdbApiKey: String = "",
+    onTmdbApiKeySave: (String) -> Unit = {}
 ) {
+    var inputApiKey by remember(tmdbApiKey) { mutableStateOf(tmdbApiKey) }
+    var showApiKeySavedNotice by remember { mutableStateOf(false) }
     var showAdultConfirmDialog by remember { mutableStateOf(false) }
     var adultPin by remember { mutableStateOf("") }
     var adultPinError by remember { mutableStateOf(false) }
     val adultPinFocusRequester = remember { FocusRequester() }
-    var expandedThemeDropdown by remember { mutableStateOf(false) }
+
+    var themeCardExpanded by rememberSaveable { mutableStateOf(false) }
+    var tmdbKeyCardExpanded by rememberSaveable { mutableStateOf(false) }
+    var adultCardExpanded by rememberSaveable { mutableStateOf(false) }
+    var resumeNoticeExpanded by rememberSaveable { mutableStateOf(false) }
+
     val isDynamicSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
     val context = LocalContext.current
     var resumeNoticeConfig by remember { mutableStateOf(ResumeNoticePreferences.load(context)) }
-    var resumeNoticeExpanded by remember { mutableStateOf(false) }
+
     val updateResumeNotice: (com.example.util.ResumeNoticeConfig) -> Unit = { updated ->
         resumeNoticeConfig = updated
         ResumeNoticePreferences.save(context, updated)
     }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -102,75 +117,137 @@ fun AppearanceScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            // ── 1. Theme & Appearance (Collapsible) ──────────────────────────
+            val themeChevronRotation by animateFloatAsState(
+                targetValue = if (themeCardExpanded) 180f else 0f,
+                label = "themeChevron"
+            )
+
             Card(
                 shape = RoundedCornerShape(12.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
             ) {
-                Row(
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                        .animateContentSize()
                 ) {
-                    Text(
-                        text = "Choose theme",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.weight(1f)
-                    )
-
-                    Spacer(modifier = Modifier.width(12.dp))
-
-                    ExposedDropdownMenuBox(
-                        expanded = expandedThemeDropdown,
-                        onExpandedChange = { expandedThemeDropdown = it },
-                        modifier = Modifier.width(160.dp)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { themeCardExpanded = !themeCardExpanded }
+                            .padding(16.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                            modifier = Modifier
-                                .menuAnchor(MenuAnchorType.PrimaryNotEditable)
-                                .fillMaxWidth()
-                                .height(40.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(horizontal = 12.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = currentThemeMode.getDisplayName(),
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedThemeDropdown)
-                            }
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Theme & Appearance",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = currentThemeMode.getDisplayName(),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
-                        ExposedDropdownMenu(
-                            expanded = expandedThemeDropdown,
-                            onDismissRequest = { expandedThemeDropdown = false },
-                            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer
+                        ) {
+                            Text(
+                                text = currentThemeMode.getDisplayName().uppercase(),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Icon(
+                            imageVector = Icons.Filled.KeyboardArrowDown,
+                            contentDescription = if (themeCardExpanded) "Collapse theme settings" else "Expand theme settings",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.rotate(themeChevronRotation)
+                        )
+                    }
+
+                    if (themeCardExpanded) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             ThemeMode.entries.forEach { mode ->
                                 val isSupported = mode != ThemeMode.DYNAMIC || isDynamicSupported
                                 if (isSupported) {
-                                    DropdownMenuItem(
-                                        text = { Text(mode.getDisplayName(), color = MaterialTheme.colorScheme.onSurface) },
-                                        onClick = {
-                                            onThemeSelected(mode)
-                                            expandedThemeDropdown = false
-                                        },
-                                        contentPadding = ExposedDropdownMenuDefaults.ItemContentPadding
-                                    )
+                                    val isSelected = currentThemeMode == mode
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+                                        border = BorderStroke(
+                                            1.dp,
+                                            if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
+                                        ),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable { onThemeSelected(mode) }
+                                    ) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(12.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            RadioButton(
+                                                selected = isSelected,
+                                                onClick = { onThemeSelected(mode) },
+                                                colors = RadioButtonDefaults.colors(
+                                                    selectedColor = MaterialTheme.colorScheme.primary,
+                                                    unselectedColor = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    Text(
+                                                        text = mode.getDisplayName(),
+                                                        style = MaterialTheme.typography.bodyMedium,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+                                                    )
+                                                    if (isSelected) {
+                                                        Spacer(modifier = Modifier.width(6.dp))
+                                                        Surface(
+                                                            shape = RoundedCornerShape(4.dp),
+                                                            color = MaterialTheme.colorScheme.primary
+                                                        ) {
+                                                            Text(
+                                                                text = "ACTIVE",
+                                                                style = MaterialTheme.typography.labelSmall,
+                                                                fontSize = 9.sp,
+                                                                fontWeight = FontWeight.ExtraBold,
+                                                                color = MaterialTheme.colorScheme.onPrimary,
+                                                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                                Spacer(modifier = Modifier.height(2.dp))
+                                                Text(
+                                                    text = mode.getDescription(),
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f) else MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -178,51 +255,253 @@ fun AppearanceScreen(
                 }
             }
 
+            // ── 2. TMDB API Key (Collapsible) ────────────────────────────────
+            val tmdbKeyChevronRotation by animateFloatAsState(
+                targetValue = if (tmdbKeyCardExpanded) 180f else 0f,
+                label = "tmdbKeyChevron"
+            )
+
             Card(
                 shape = RoundedCornerShape(12.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
             ) {
-                Row(
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                        .animateContentSize()
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Adult content (18+)",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = "Show 18+ adult content preset and filters",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { tmdbKeyCardExpanded = !tmdbKeyCardExpanded }
+                            .padding(16.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "TMDB API Key",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = if (tmdbApiKey.isNotBlank()) "Personal key active" else "Not set · Using AnyFilm provider",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = if (tmdbApiKey.isNotBlank()) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh
+                        ) {
+                            Text(
+                                text = if (tmdbApiKey.isNotBlank()) "ACTIVE" else "NOT SET",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = if (tmdbApiKey.isNotBlank()) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Icon(
+                            imageVector = Icons.Filled.KeyboardArrowDown,
+                            contentDescription = if (tmdbKeyCardExpanded) "Collapse TMDB key settings" else "Expand TMDB key settings",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.rotate(tmdbKeyChevronRotation)
                         )
                     }
-                    Switch(
-                        checked = isAdultEnabled,
-                        onCheckedChange = { checked ->
-                            if (checked) {
-                                adultPin = ""
-                                adultPinError = false
-                                showAdultConfirmDialog = true
-                            } else {
-                                onAdultToggle(false)
+
+                    if (tmdbKeyCardExpanded) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Text(
+                                text = "Personal API key for TMDB catalogue, search & artwork. Leave empty to use AnyFilm provider catalogue without TMDB.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+
+                            OutlinedTextField(
+                                value = inputApiKey,
+                                onValueChange = { inputApiKey = it.trim() },
+                                modifier = Modifier.fillMaxWidth(),
+                                placeholder = {
+                                    Text(
+                                        text = "Enter 32-character API key",
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                                        fontSize = 13.sp
+                                    )
+                                },
+                                singleLine = true,
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                    unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+                                    focusedTextColor = MaterialTheme.colorScheme.onSurface,
+                                    unfocusedTextColor = MaterialTheme.colorScheme.onSurface
+                                ),
+                                trailingIcon = {
+                                    if (inputApiKey.isNotBlank()) {
+                                        IconButton(onClick = { inputApiKey = "" }) {
+                                            Icon(
+                                                Icons.Default.Clear,
+                                                contentDescription = "Clear",
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                }
+                            )
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Button(
+                                    onClick = {
+                                        onTmdbApiKeySave(inputApiKey)
+                                        showApiKeySavedNotice = true
+                                    },
+                                    enabled = inputApiKey != tmdbApiKey,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("Save Key")
+                                }
+
+                                if (tmdbApiKey.isNotBlank()) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            inputApiKey = ""
+                                            onTmdbApiKeySave("")
+                                        }
+                                    ) {
+                                        Text("Remove")
+                                    }
+                                }
                             }
-                        },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
-                            checkedTrackColor = MaterialTheme.colorScheme.primary,
-                            uncheckedThumbColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                            uncheckedTrackColor = MaterialTheme.colorScheme.surfaceContainerHigh
-                        )
-                    )
+
+                            if (showApiKeySavedNotice) {
+                                LaunchedEffect(showApiKeySavedNotice) {
+                                    delay(2500)
+                                    showApiKeySavedNotice = false
+                                }
+                                Text(
+                                    text = if (tmdbApiKey.isNotBlank()) "✓ TMDB API key saved successfully" else "TMDB API key removed",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+
+                            Text(
+                                text = "Get a free API key at themoviedb.org/settings/api",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
                 }
             }
 
+            // ── 3. Adult Content (18+) (Collapsible) ──────────────────────────
+            val adultChevronRotation by animateFloatAsState(
+                targetValue = if (adultCardExpanded) 180f else 0f,
+                label = "adultChevron"
+            )
+
+            Card(
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .animateContentSize()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { adultCardExpanded = !adultCardExpanded }
+                            .padding(16.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Adult content (18+)",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = if (isAdultEnabled) "Unlocked · 18+ content visible" else "Locked · 18+ content hidden",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Switch(
+                            checked = isAdultEnabled,
+                            onCheckedChange = { checked ->
+                                if (checked) {
+                                    adultPin = ""
+                                    adultPinError = false
+                                    showAdultConfirmDialog = true
+                                } else {
+                                    onAdultToggle(false)
+                                }
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
+                                checkedTrackColor = MaterialTheme.colorScheme.primary,
+                                uncheckedThumbColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                uncheckedTrackColor = MaterialTheme.colorScheme.surfaceContainerHigh
+                            )
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Icon(
+                            imageVector = Icons.Filled.KeyboardArrowDown,
+                            contentDescription = if (adultCardExpanded) "Collapse adult settings" else "Expand adult settings",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.rotate(adultChevronRotation)
+                        )
+                    }
+
+                    if (adultCardExpanded) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "Protects your feed from adult titles and categories. Unlocking requires a 4-digit security PIN.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (isAdultEnabled) {
+                                OutlinedButton(
+                                    onClick = { onAdultToggle(false) },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("Lock Adult Content Now")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── 4. Resume message (Collapsible) ──────────────────────────────
             val resumeNoticeSummary = if (!resumeNoticeConfig.enabled) {
                 "Off"
             } else {
@@ -232,11 +511,20 @@ fun AppearanceScreen(
                 ).joinToString(" · ")
             }
 
+            val resumeChevronRotation by animateFloatAsState(
+                targetValue = if (resumeNoticeExpanded) 180f else 0f,
+                label = "resumeChevron"
+            )
+
             Card(
                 shape = RoundedCornerShape(12.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
             ) {
-                Column(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .animateContentSize()
+                ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -262,7 +550,7 @@ fun AppearanceScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                        Spacer(modifier = Modifier.width(12.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
                         Switch(
                             checked = resumeNoticeConfig.enabled,
                             onCheckedChange = { enabled ->
@@ -284,7 +572,7 @@ fun AppearanceScreen(
                                 "Expand resume message settings"
                             },
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.rotate(if (resumeNoticeExpanded) 180f else 0f)
+                            modifier = Modifier.rotate(resumeChevronRotation)
                         )
                     }
 
@@ -376,7 +664,7 @@ fun AppearanceScreen(
                 }
             }
 
-            // Application developer credit
+            // ── 5. Application developer credit ──────────────────────────────
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -412,7 +700,6 @@ fun AppearanceScreen(
                     )
                 }
             }
-
         }
     }
 
@@ -557,77 +844,6 @@ private fun <T> SettingsDropdown(
                     contentPadding = ExposedDropdownMenuDefaults.ItemContentPadding
                 )
             }
-        }
-    }
-}
-
-@Composable
-private fun ThemeOptionCard(
-    title: String,
-    subtitle: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-    primarySwatch: Color,
-    backgroundSwatch: Color,
-    outlineSwatch: Color? = null,
-    enabled: Boolean = true
-) {
-    Card(
-        onClick = onClick,
-        enabled = enabled,
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainer,
-            disabledContainerColor = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.5f)
-        ),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // Swatch Preview
-            Box(
-                modifier = Modifier
-                    .size(40.dp)
-                    .clip(CircleShape)
-                    .background(backgroundSwatch)
-                    .border(2.dp, outlineSwatch ?: primarySwatch, CircleShape),
-                contentAlignment = Alignment.Center
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(16.dp)
-                        .clip(CircleShape)
-                        .background(primarySwatch)
-                )
-            }
-
-            Spacer(modifier = Modifier.width(16.dp))
-
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-                )
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (enabled) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
-                )
-            }
-
-            Spacer(modifier = Modifier.width(8.dp))
-
-            RadioButton(
-                selected = selected,
-                onClick = null, // handled by Card click
-                enabled = enabled
-            )
         }
     }
 }

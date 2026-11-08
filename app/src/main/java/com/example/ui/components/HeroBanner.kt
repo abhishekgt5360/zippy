@@ -9,6 +9,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -78,7 +79,7 @@ fun HeroBanner(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(460.dp)
+            .height(310.dp)
             .testTag("hero_banner")
     ) {
         HorizontalPager(
@@ -95,16 +96,16 @@ fun HeroBanner(
         // ── Pager Dot Indicators ─────────────────────────────────────────────
         if (pagerState.pageCount > 1) {
             Row(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 12.dp)
+                    .padding(bottom = 6.dp)
             ) {
                 repeat(pagerState.pageCount) { index ->
                     val isActive = pagerState.currentPage == index
                     val dotWidth by animateDpAsState(
-                        targetValue = if (isActive) 22.dp else 6.dp,
+                        targetValue = if (isActive) 18.dp else 5.dp,
                         animationSpec = spring(
                             dampingRatio = Spring.DampingRatioMediumBouncy,
                             stiffness = Spring.StiffnessMedium
@@ -113,7 +114,7 @@ fun HeroBanner(
                     )
                     Box(
                         modifier = Modifier
-                            .height(6.dp)
+                            .height(5.dp)
                             .width(dotWidth)
                             .clip(RoundedCornerShape(999.dp))
                             .background(
@@ -139,15 +140,16 @@ private fun HeroBannerSlide(
             .background(MaterialTheme.colorScheme.surfaceContainerHighest)
             .clickable(onClick = onItemClick)
     ) {
-        // Full artwork fills the hero banner: horizontal stays locked to the screen width,
-        // while the image is stretched vertically to cover the entire banner height.
+        // High-definition 16:9 widescreen backdrop with centered crop (no distortion)
+        val artworkUrl = item.backdropUrl?.takeIf { it.isNotBlank() } ?: item.posterUrl
         AsyncImage(
             model = ImageRequest.Builder(LocalContext.current)
-                .data(item.posterUrl)
+                .data(artworkUrl)
                 .crossfade(true)
                 .build(),
             contentDescription = item.safeName,
-            contentScale = ContentScale.FillBounds,
+            contentScale = ContentScale.Crop,
+            alignment = Alignment.Center,
             modifier = Modifier.fillMaxSize()
         )
 
@@ -155,7 +157,7 @@ private fun HeroBannerSlide(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(140.dp)
+                .height(100.dp)
                 .align(Alignment.TopCenter)
                 .background(
                     Brush.verticalGradient(
@@ -175,10 +177,10 @@ private fun HeroBannerSlide(
                     Brush.verticalGradient(
                         colorStops = arrayOf(
                             0.00f to Color.Transparent,
-                            0.40f to Color.Transparent,
-                            0.50f to Color.Black.copy(alpha = 0.45f), // legibility-ok: hero image scrim
-                            0.65f to Color.Black.copy(alpha = 0.70f), // legibility-ok: hero image scrim
-                            0.88f to Color.Black.copy(alpha = 0.90f), // legibility-ok: hero image scrim
+                            0.20f to Color.Transparent,
+                            0.45f to Color.Black.copy(alpha = 0.35f), // legibility-ok: hero image scrim
+                            0.65f to Color.Black.copy(alpha = 0.65f), // legibility-ok: hero image scrim
+                            0.85f to Color.Black.copy(alpha = 0.88f), // legibility-ok: hero image scrim
                             1.00f to MaterialTheme.colorScheme.background
                         )
                     )
@@ -190,48 +192,49 @@ private fun HeroBannerSlide(
             modifier = Modifier
                 .fillMaxWidth()
                 .align(Alignment.BottomStart)
-                .padding(horizontal = 20.dp, vertical = 28.dp)
+                .padding(horizontal = 18.dp, vertical = 18.dp)
         ) {
-            // Type Pill
-            val typeText = if (item.isTvSeries) "SERIES" else "MOVIE"
-            PosterBadge(text = typeText)
+            // Type Pill & Meta Row (Inline for sleek cinematic look)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                val typeText = if (item.isTvSeries) "SERIES" else "MOVIE"
+                PosterBadge(text = typeText)
 
-            Spacer(modifier = Modifier.height(8.dp))
+                val metaList = listOfNotNull(
+                    item.genre?.split(",")?.firstOrNull()?.trim(),
+                    item.year?.takeIf { it.isNotBlank() }
+                )
+                if (metaList.isNotEmpty()) {
+                    Text(
+                        text = metaList.joinToString(" • "),
+                        color = Color.White.copy(alpha = 0.85f), // legibility-ok: hero metadata text
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
 
             // Movie/Show Title
             Text(
                 text = item.safeName,
                 color = Color.White, // legibility-ok: text over hero image scrim
-                fontSize = 28.sp,
+                fontSize = 22.sp,
                 fontWeight = FontWeight.ExtraBold,
-                maxLines = 2,
+                maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                lineHeight = 32.sp
+                lineHeight = 26.sp
             )
 
-            Spacer(modifier = Modifier.height(6.dp))
-
-            // Metadata Row: Genre, Year, Rating
-            val metaList = listOfNotNull(
-                item.genre?.split(",")?.firstOrNull()?.trim(),
-                item.year?.takeIf { it.isNotBlank() }
-            )
-            if (metaList.isNotEmpty()) {
-                Text(
-                    text = metaList.joinToString(" • "),
-                    color = Color.White.copy(alpha = 0.85f), // legibility-ok: hero metadata text
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Medium
-                )
-                Spacer(modifier = Modifier.height(14.dp))
-            } else {
-                Spacer(modifier = Modifier.height(10.dp))
-            }
+            Spacer(modifier = Modifier.height(8.dp))
 
             // ── Primary Actions: Watch Now (Primary) & Details (Tonal) ──
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Button(
@@ -243,19 +246,20 @@ private fun HeroBannerSlide(
                     ),
                     modifier = Modifier
                         .weight(1f)
-                        .height(46.dp)
-                        .testTag("hero_watch_button")
+                        .height(38.dp)
+                        .testTag("hero_watch_button"),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 2.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.PlayArrow,
                         contentDescription = null,
-                        modifier = Modifier.size(22.dp)
+                        modifier = Modifier.size(18.dp)
                     )
-                    Spacer(Modifier.width(6.dp))
+                    Spacer(Modifier.width(4.dp))
                     Text(
                         text = "Watch Now",
                         fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp
+                        fontSize = 13.sp
                     )
                 }
 
@@ -269,19 +273,20 @@ private fun HeroBannerSlide(
                     ),
                     modifier = Modifier
                         .weight(1f)
-                        .height(46.dp)
-                        .testTag("hero_details_button")
+                        .height(38.dp)
+                        .testTag("hero_details_button"),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 2.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Info,
                         contentDescription = null,
-                        modifier = Modifier.size(20.dp)
+                        modifier = Modifier.size(18.dp)
                     )
-                    Spacer(Modifier.width(6.dp))
+                    Spacer(Modifier.width(4.dp))
                     Text(
                         text = "Details",
                         fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp
+                        fontSize = 13.sp
                     )
                 }
             }

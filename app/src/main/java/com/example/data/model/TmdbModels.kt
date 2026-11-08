@@ -116,7 +116,8 @@ data class TmdbMovieItem(
             tmdbMediaType = safeMediaType,
             tmdbOriginalTitle = safeOriginalTitle,
             tmdbOriginalLanguage = originalLanguage,
-            tmdbCountry = originCountry?.firstOrNull()
+            tmdbCountry = originCountry?.firstOrNull(),
+            backdropUrl = backdropUrl("w1280")
         )
     }
 }
