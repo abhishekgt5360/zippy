@@ -54,6 +54,7 @@ class MovieRepository(
     companion object {
         @Volatile private var inMemoryHome: HomeResponse? = null
         private val catalogCache = java.util.concurrent.ConcurrentHashMap<String, CatalogResponse>()
+        private val detailCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, DetailResponse>>()
 
         /**
          * Single source of truth for catalog cache keys so the ViewModel can look up
@@ -321,8 +322,14 @@ class MovieRepository(
                     IllegalArgumentException("Cannot request MovieBox detail: Invalid or TMDB-generated slug '$slug'.")
                 )
             }
+            val now = System.currentTimeMillis()
+            val cached = detailCache[slug]
+            if (cached != null && (now - cached.first) < 300_000L) {
+                return@withContext Result.success(cached.second)
+            }
             try {
                 val response = api.getDetail(slug)
+                detailCache[slug] = now to response
                 Result.success(response)
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e

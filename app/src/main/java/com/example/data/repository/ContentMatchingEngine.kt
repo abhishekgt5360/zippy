@@ -559,28 +559,39 @@ class ContentMatchingEngine(
             plannedQueries.add("$title $releaseYear")
         }
 
+        val searchResults = coroutineScope {
+            plannedQueries.map { q ->
+                async {
+                    android.util.Log.d(
+                        "ZippyPlayback",
+                        "[MOVIEBOX_SEARCH_START] endpoint='/search', query='$q', tmdbId=$tmdbId, mediaType='$mediaType', page=1"
+                    )
+                    val res = movieRepository.search(q, page = 1)
+                    if (res.isFailure) {
+                        android.util.Log.w(
+                            "ZippyPlayback",
+                            "[MOVIEBOX_SEARCH_FAILURE] endpoint='/search', query='$q', error='${res.exceptionOrNull()?.message}'"
+                        )
+                    } else {
+                        val items = res.getOrNull()?.items.orEmpty()
+                        android.util.Log.d(
+                            "ZippyPlayback",
+                            "[MOVIEBOX_SEARCH_SUCCESS] endpoint='/search', query='$q', resultsCount=${items.size}"
+                        )
+                    }
+                    res
+                }
+            }.awaitAll()
+        }
+
         var anySearchFailed = false
         val allCandidates = mutableListOf<MovieItem>()
 
-        for (q in plannedQueries) {
-            android.util.Log.d(
-                "ZippyPlayback",
-                "[MOVIEBOX_SEARCH_START] endpoint='/search', query='$q', tmdbId=$tmdbId, mediaType='$mediaType', page=1"
-            )
-            val res = movieRepository.search(q, page = 1)
+        for (res in searchResults) {
             if (res.isFailure) {
                 anySearchFailed = true
-                android.util.Log.w(
-                    "ZippyPlayback",
-                    "[MOVIEBOX_SEARCH_FAILURE] endpoint='/search', query='$q', error='${res.exceptionOrNull()?.message}'"
-                )
             } else {
-                val items = res.getOrNull()?.items.orEmpty()
-                android.util.Log.d(
-                    "ZippyPlayback",
-                    "[MOVIEBOX_SEARCH_SUCCESS] endpoint='/search', query='$q', resultsCount=${items.size}"
-                )
-                allCandidates.addAll(items)
+                allCandidates.addAll(res.getOrNull()?.items.orEmpty())
             }
         }
 

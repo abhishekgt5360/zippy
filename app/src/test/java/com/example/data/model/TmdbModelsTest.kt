@@ -47,6 +47,8 @@ class TmdbModelsTest {
         assertEquals("1999", movieItem.year)
         assertEquals("Drama", movieItem.genre)
         assertEquals("movie", movieItem.type)
+        assertEquals("A ticking-time-bomb insomniac...", movieItem.overview)
+        assertNotNull(movieItem.backdropUrl)
     }
 
     @Test
@@ -81,6 +83,7 @@ class TmdbModelsTest {
         assertEquals("TV", movieItem.badge)
         assertEquals("Sci-Fi & Fantasy", movieItem.genre)
         assertEquals("tv", movieItem.type)
+        assertEquals("Seven noble families fight for control of the mythical land of Westeros.", movieItem.overview)
     }
 
     @Test

@@ -131,6 +131,9 @@ data class DetailPlayerUiState(
     val country: String? = null,
     // Batch 2: Rich TMDB details and provider matching state
     val tmdbDetail: TmdbDetailResponse? = null,
+    val initialOverview: String? = null,
+    val initialBackdropUrl: String? = null,
+    val initialGenre: String? = null,
     val isMatchingProvider: Boolean = false,
     val isProviderAvailable: Boolean = false,
     val providerMatchStatus: String? = null,
@@ -1153,7 +1156,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             originalTitle = item.tmdbOriginalTitle,
             releaseYear = item.year,
             originalLanguage = item.tmdbOriginalLanguage ?: item.language,
-            country = item.tmdbCountry ?: item.country
+            country = item.tmdbCountry ?: item.country,
+            backdropUrl = item.backdropUrl,
+            overview = item.overview,
+            genre = item.genre
         )
     }
 
@@ -1167,7 +1173,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         originalTitle: String? = null,
         releaseYear: String? = null,
         originalLanguage: String? = null,
-        country: String? = null
+        country: String? = null,
+        backdropUrl: String? = null,
+        overview: String? = null,
+        genre: String? = null
     ) {
         // Library rows, deep links, and search hits can all reach a blocked title, so
         // gate before any detail state is published.
@@ -1209,6 +1218,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             releaseYear = releaseYear,
             originalLanguage = originalLanguage,
             country = country,
+            initialOverview = overview,
+            initialBackdropUrl = backdropUrl,
+            initialGenre = genre,
             isMatchingProvider = effectiveTmdbId != null,
             isProviderAvailable = false
         )
@@ -1269,30 +1281,56 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // Instead, resolve genuine MovieBox provider mappings via ContentMatchingEngine.
         if (!isMovieBoxSlug) {
             if (effectiveTmdbId != null) {
-                viewModelScope.launch {
+                viewModelScope.launch(Dispatchers.IO) {
                     try {
-                        var effYear = releaseYear
-                        var effLang = originalLanguage
-                        var effCountry = country
-                        if (effYear.isNullOrBlank() && tmdbRepository.isConfigured()) {
-                            try {
-                                val tmdbRes = if (mediaType == "tv") tmdbRepository.getTvDetail(effectiveTmdbId).getOrNull()
-                                              else tmdbRepository.getMovieDetail(effectiveTmdbId).getOrNull()
-                                if (tmdbRes != null) {
-                                    effYear = tmdbRes.year ?: effYear
-                                    effLang = tmdbRes.originalLanguage ?: effLang
-                                    effCountry = tmdbRes.originCountry?.firstOrNull() ?: effCountry
-                                }
-                            } catch (_: Exception) {}
+                        // FAST PATH: Immediate Room DB cache inspection (0 network calls)
+                        val cached = matchingEngine.getCachedMapping(effectiveTmdbId, mediaType)
+                        if (cached != null && cached.isPlayable && cached.matchStatus == MatchStatus.VERIFIED) {
+                            val verifiedSlug = cached.movieboxDetailPath!!
+                            val verifiedSubjectId = cached.movieboxSubjectId!!
+                            _detailPlayerState.update {
+                                it.copy(
+                                    slug = verifiedSlug,
+                                    subjectId = verifiedSubjectId,
+                                    isMatchingProvider = false,
+                                    isProviderAvailable = true,
+                                    providerMatchStatus = "VERIFIED",
+                                    isLoadingDetail = true
+                                )
+                            }
+                            fetchMovieBoxDetail(
+                                slug = verifiedSlug,
+                                subjectId = verifiedSubjectId,
+                                guessedSeries = guessedSeries,
+                                title = title,
+                                posterUrl = posterUrl
+                            )
+                            // If availability expired (> 24 hours), silently refresh in background without UI blocking
+                            if (cached.isAvailabilityExpired) {
+                                try {
+                                    matchingEngine.getMapping(
+                                        tmdbId = effectiveTmdbId,
+                                        mediaType = mediaType,
+                                        title = title,
+                                        originalTitle = originalTitle ?: title,
+                                        releaseYear = releaseYear,
+                                        language = originalLanguage,
+                                        country = country
+                                    )
+                                } catch (_: Exception) {}
+                            }
+                            return@launch
                         }
+
+                        // FRESH MATCHING: Direct matching without duplicate TMDB detail fetch
                         var match = matchingEngine.getMapping(
                             tmdbId = effectiveTmdbId,
                             mediaType = mediaType,
                             title = title,
                             originalTitle = originalTitle ?: title,
-                            releaseYear = effYear,
-                            language = effLang,
-                            country = effCountry
+                            releaseYear = releaseYear,
+                            language = originalLanguage,
+                            country = country
                         )
                         if (!match.isPlayable && match.matchStatus != MatchStatus.VERIFIED) {
                             try {
@@ -1301,9 +1339,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                     mediaType = mediaType,
                                     title = title,
                                     originalTitle = originalTitle ?: title,
-                                    releaseYear = effYear,
-                                    language = effLang,
-                                    country = effCountry,
+                                    releaseYear = releaseYear,
+                                    language = originalLanguage,
+                                    country = country,
                                     forceRefresh = true
                                 )
                             } catch (e: Exception) {

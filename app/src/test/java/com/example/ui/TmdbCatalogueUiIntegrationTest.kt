@@ -316,7 +316,9 @@ class TmdbCatalogueUiIntegrationTest {
             tmdbMediaType = "movie",
             tmdbOriginalTitle = "రౌద్రం రణం రుధిరం",
             tmdbOriginalLanguage = "te",
-            tmdbCountry = "IN"
+            tmdbCountry = "IN",
+            backdropUrl = "https://image.tmdb.org/t/p/w1280/backdrop.jpg",
+            overview = "A fictional story about two legendary revolutionaries..."
         )
 
         viewModel.openDetail(tmdbMovie)
@@ -329,6 +331,9 @@ class TmdbCatalogueUiIntegrationTest {
         assertEquals("2022", state.releaseYear)
         assertEquals("te", state.originalLanguage)
         assertEquals("IN", state.country)
+        assertEquals("Action", state.initialGenre)
+        assertEquals("A fictional story about two legendary revolutionaries...", state.initialOverview)
+        assertEquals("https://image.tmdb.org/t/p/w1280/backdrop.jpg", state.initialBackdropUrl)
         assertFalse(state.isLoadingDetail) // TMDB slug must not trigger raw MovieBox detail loading
     }
 

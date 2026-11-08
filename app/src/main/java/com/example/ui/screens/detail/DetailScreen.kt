@@ -502,6 +502,7 @@ fun DetailScreen(
                 // ── Backdrop Header ──────────────────────────────────────────
 
                 val headerArtwork = uiState.tmdbDetail?.backdropUrl()
+                    ?: uiState.initialBackdropUrl
                     ?: uiState.posterUrl
                     ?: subject?.cover?.url
 
@@ -693,11 +694,11 @@ fun DetailScreen(
 
 
 
-                    // Play FAB (only visible when streaming is verified and available)
+                    // Play FAB (visible when streaming is verified or currently matching)
 
                     val canPlayFab = uiState.isProviderAvailable || (uiState.tmdbId == null && com.example.data.model.MovieBoxPlaybackGuard.canInitiatePlayback(uiState.subjectId, uiState.slug))
 
-                    if (canPlayFab) {
+                    if (canPlayFab || uiState.isMatchingProvider) {
 
                         Box(
 
@@ -709,11 +710,15 @@ fun DetailScreen(
 
                                 .clip(CircleShape)
 
-                                .background(MaterialTheme.colorScheme.primary)
+                                .background(if (canPlayFab) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primary.copy(alpha = 0.6f))
 
                                 .border(1.dp, MaterialTheme.colorScheme.primary, CircleShape)
 
-                                .clickable(indication = null, interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }) {
+                                .clickable(
+                                    enabled = canPlayFab,
+                                    indication = null,
+                                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+                                ) {
 
                                     onPlayClick(
 
@@ -731,7 +736,11 @@ fun DetailScreen(
 
                         ) {
 
-                            Icon(Icons.Default.PlayArrow, null, tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(32.dp))
+                            if (canPlayFab) {
+                                Icon(Icons.Default.PlayArrow, null, tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(32.dp))
+                            } else {
+                                CircularProgressIndicator(color = MaterialTheme.colorScheme.onPrimary, strokeWidth = 2.dp, modifier = Modifier.size(24.dp))
+                            }
 
                         }
 
@@ -893,6 +902,7 @@ fun DetailScreen(
 
                         val genresText = uiState.tmdbDetail?.genres?.mapNotNull { it.name }?.filter { it.isNotBlank() }?.joinToString(", ")
                             ?.ifBlank { null }
+                            ?: uiState.initialGenre
                             ?: subject?.genre
 
                         if (!genresText.isNullOrBlank()) {
@@ -1031,39 +1041,27 @@ fun DetailScreen(
 
                         } else if (uiState.isMatchingProvider) {
 
-                            LiquidGlassCard(cornerRadius = 14.dp, modifier = Modifier.fillMaxWidth()) {
+                            Row(
 
-                                Row(
+                                modifier = Modifier.fillMaxWidth(),
 
-                                    modifier = Modifier.padding(14.dp),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
 
-                                    verticalAlignment = Alignment.CenterVertically,
+                            ) {
 
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                LiquidGlassButton(
 
-                                ) {
+                                    text = if (uiState.isSeries) "Finding Stream..." else "Checking Stream...",
 
-                                    CircularProgressIndicator(
+                                    onClick = {},
 
-                                        color = MaterialTheme.colorScheme.primary,
+                                    enabled = false,
 
-                                        strokeWidth = 2.dp,
+                                    icon = Icons.Default.PlayArrow,
 
-                                        modifier = Modifier.size(18.dp)
+                                    modifier = Modifier.weight(1f).testTag("detail_watch_button")
 
-                                    )
-
-                                    Text(
-
-                                        text = "Checking streaming availability...",
-
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-
-                                        fontSize = 13.sp
-
-                                    )
-
-                                }
+                                )
 
                             }
 
@@ -1167,6 +1165,7 @@ fun DetailScreen(
                     item {
 
                         val synopsis = uiState.tmdbDetail?.overview?.takeIf { it.isNotBlank() }
+                            ?: uiState.initialOverview?.takeIf { it.isNotBlank() }
                             ?: subject?.description?.ifBlank { null }
                             ?: "No synopsis available."
 

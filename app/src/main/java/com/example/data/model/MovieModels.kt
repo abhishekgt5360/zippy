@@ -54,7 +54,8 @@ data class MovieItem(
     val tmdbOriginalTitle: String? = null,
     val tmdbOriginalLanguage: String? = null,
     val tmdbCountry: String? = null,
-    @Json(name = "backdrop_url") val backdropUrl: String? = null
+    @Json(name = "backdrop_url") val backdropUrl: String? = null,
+    val overview: String? = null
 ) {
     constructor(
         name: String? = "",
@@ -71,7 +72,8 @@ data class MovieItem(
         tmdbOriginalTitle: String? = null,
         tmdbOriginalLanguage: String? = null,
         tmdbCountry: String? = null,
-        backdropUrl: String? = null
+        backdropUrl: String? = null,
+        overview: String? = null
     ) : this(
         name = name,
         posterUrl = posterUrl,
@@ -89,7 +91,8 @@ data class MovieItem(
         tmdbOriginalTitle = tmdbOriginalTitle,
         tmdbOriginalLanguage = tmdbOriginalLanguage,
         tmdbCountry = tmdbCountry,
-        backdropUrl = backdropUrl
+        backdropUrl = backdropUrl,
+        overview = overview
     )
 
     val subjectId: String
