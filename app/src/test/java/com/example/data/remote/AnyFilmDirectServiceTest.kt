@@ -3,6 +3,7 @@ package com.example.data.remote
 import android.content.Context
 import android.util.Base64
 import androidx.test.core.app.ApplicationProvider
+import com.example.data.model.LiveTvChannel
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import kotlinx.coroutines.runBlocking
@@ -191,6 +192,24 @@ class AnyFilmDirectServiceTest {
 
         val captions = anyFilmService.getCaptions(subjectId, subjectId, 0, 0)
         assertTrue("Captions should be returned", captions.captions.orEmpty().isNotEmpty())
+    }
+
+    @Test
+    fun test11_liveTvEndpointsReturnValidCountriesAndChannels() = runBlocking {
+        val countriesRes = anyFilmService.getLiveTvCountries()
+        assertNotNull(countriesRes)
+        val countries = countriesRes.data?.items.orEmpty()
+        assertTrue("Countries list should not be empty", countries.isNotEmpty())
+        assertTrue("Should include India", countries.any { it.countryCode.equals("IN", ignoreCase = true) })
+
+        val channelsRes = anyFilmService.getLiveTvChannels(countryCode = "IN", page = 1, perPage = 10)
+        assertNotNull(channelsRes)
+        val channels = channelsRes.data?.items.orEmpty()
+        assertTrue("Channels list for India should not be empty", channels.isNotEmpty())
+        val firstChannel = channels.first()
+        assertTrue("Channel should have a title", firstChannel.title.isNotBlank())
+        assertTrue("Channel should have a stream", firstChannel.streams.isNotEmpty())
+        assertTrue("Stream should be an HLS m3u8 url", firstChannel.streams.first().url.contains(".m3u8"))
     }
 }
 

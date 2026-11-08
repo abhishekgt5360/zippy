@@ -225,15 +225,15 @@ fun MainApp(
                         modifier = Modifier.testTag("nav_browse")
                     )
                     NavigationBarItem(
-                        selected = !showAppearanceScreen && currentTab == AppTab.SEARCH,
+                        selected = !showAppearanceScreen && currentTab == AppTab.LIVE_TV,
                         onClick = {
                             showAppearanceScreen = false
-                            viewModel.selectTab(AppTab.SEARCH)
+                            viewModel.selectTab(AppTab.LIVE_TV)
                         },
-                        icon = { Icon(Icons.Filled.Search, contentDescription = "Search") },
-                        label = { Text("Search") },
+                        icon = { Icon(if (!showAppearanceScreen && currentTab == AppTab.LIVE_TV) Icons.Filled.LiveTv else Icons.Outlined.LiveTv, contentDescription = "Live TV") },
+                        label = { Text("Live TV") },
                         colors = navColors,
-                        modifier = Modifier.testTag("nav_search")
+                        modifier = Modifier.testTag("nav_live_tv")
                     )
                     NavigationBarItem(
                         selected = !showAppearanceScreen && currentTab == AppTab.LIBRARY,
@@ -246,14 +246,6 @@ fun MainApp(
                         label = { Text("Library") },
                         colors = navColors,
                         modifier = Modifier.testTag("nav_library")
-                    )
-                    NavigationBarItem(
-                        selected = showAppearanceScreen,
-                        onClick = { showAppearanceScreen = true },
-                        icon = { Icon(if (showAppearanceScreen) Icons.Filled.Settings else Icons.Outlined.Settings, contentDescription = "Settings") },
-                        label = { Text("Settings") },
-                        colors = navColors,
-                        modifier = Modifier.testTag("nav_settings")
                     )
                 }
             }
@@ -362,6 +354,7 @@ fun MainApp(
                             },
                             onRetry = { viewModel.loadHomeFeed(forceRefresh = true) },
                             onSearchClick = { viewModel.selectTab(AppTab.SEARCH) },
+                            onSettingsClick = { showAppearanceScreen = true },
                             onSeeAllClick = { sectionName ->
                                 if (sectionName.equals("History", ignoreCase = true)) {
                                     // "Continue Watching" see-all opens the full history list
@@ -462,6 +455,17 @@ fun MainApp(
                             onMovieClick = { movie ->
                                 viewModel.openDetail(movie)
                             }
+                        )
+                    }
+
+                    AppTab.LIVE_TV -> {
+                        com.example.ui.screens.livetv.LiveTvScreen(
+                            uiState = viewModel.liveTvState.collectAsStateWithLifecycle().value,
+                            exoPlayer = exoPlayer,
+                            onCountrySelect = { viewModel.selectLiveTvCountry(it) },
+                            onSearchQueryChange = { viewModel.setLiveTvSearchQuery(it) },
+                            onChannelClick = { viewModel.playLiveTvChannel(it) },
+                            onClosePlayer = { viewModel.closeLiveTvPlayer() }
                         )
                     }
 

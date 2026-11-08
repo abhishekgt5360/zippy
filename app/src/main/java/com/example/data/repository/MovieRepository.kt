@@ -749,4 +749,65 @@ class MovieRepository(
             }
         } catch (_: Exception) {}
     }
+
+    suspend fun getLiveTvCountries(): List<LiveTvCountry> = withContext(Dispatchers.IO) {
+        try {
+            api.getLiveTvCountries().data?.items.orEmpty()
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    suspend fun getLiveTvChannels(countryCode: String, page: Int = 1): List<LiveTvChannel> = withContext(Dispatchers.IO) {
+        val bffChannels = try {
+            api.getLiveTvChannels(countryCode, page = page, perPage = 100).data?.items.orEmpty().mapNotNull { ch ->
+                val streamUrl = ch.streams.firstOrNull()?.url ?: return@mapNotNull null
+                LiveTvChannel(
+                    id = ch.channelId,
+                    name = ch.title,
+                    category = "Live TV",
+                    logo = ch.flagUrl,
+                    streamUrl = streamUrl,
+                    countryCode = ch.countryCode ?: countryCode,
+                    countryName = ch.countryName,
+                    countryFlag = ch.countryFlag,
+                    languageCodes = ch.languageCodes
+                )
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+
+        val m3uChannels = if (countryCode.equals("IN", ignoreCase = true) || countryCode.isBlank()) {
+            try {
+                NetworkClient.liveTvService.getChannels()
+            } catch (_: Exception) {
+                emptyList()
+            }
+        } else emptyList()
+
+        (m3uChannels + bffChannels).distinctBy { it.name.trim().lowercase() }
+    }
+
+    suspend fun getLiveTvChannel(channelId: String, countryCode: String = ""): LiveTvChannel? = withContext(Dispatchers.IO) {
+        try {
+            val bff = api.getLiveTvChannel(channelId, countryCode)
+            if (bff != null) {
+                val streamUrl = bff.streams.firstOrNull()?.url ?: return@withContext null
+                LiveTvChannel(
+                    id = bff.channelId,
+                    name = bff.title,
+                    category = "Live TV",
+                    logo = bff.flagUrl,
+                    streamUrl = streamUrl,
+                    countryCode = bff.countryCode,
+                    countryName = bff.countryName,
+                    countryFlag = bff.countryFlag,
+                    languageCodes = bff.languageCodes
+                )
+            } else null
+        } catch (_: Exception) {
+            null
+        }
+    }
 }

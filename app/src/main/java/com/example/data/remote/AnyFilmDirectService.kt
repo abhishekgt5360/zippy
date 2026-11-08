@@ -1032,4 +1032,58 @@ class AnyFilmDirectService(
         }
         return list
     }
+
+    override suspend fun getLiveTvCountries(): LiveTvCountryListResponse = withContext(Dispatchers.IO) {
+        try {
+            val json = executeSignedRequest(
+                method = "GET",
+                endpoint = "/wefeed-mobile-bff/live/tv-country-list"
+            )
+            val adapter = moshi.adapter(LiveTvCountryListResponse::class.java)
+            adapter.fromJson(json.toString()) ?: LiveTvCountryListResponse()
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            android.util.Log.w(TAG, "getLiveTvCountries error: ${e.message}")
+            LiveTvCountryListResponse()
+        }
+    }
+
+    override suspend fun getLiveTvChannels(countryCode: String, page: Int, perPage: Int): LiveTvChannelListResponse = withContext(Dispatchers.IO) {
+        try {
+            val json = executeSignedRequest(
+                method = "GET",
+                endpoint = "/wefeed-mobile-bff/live/tv-channel-list-by-country",
+                queryParams = mapOf(
+                    "countryCode" to countryCode,
+                    "page" to page.toString(),
+                    "perPage" to perPage.toString()
+                )
+            )
+            val adapter = moshi.adapter(LiveTvChannelListResponse::class.java)
+            adapter.fromJson(json.toString()) ?: LiveTvChannelListResponse()
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            android.util.Log.w(TAG, "getLiveTvChannels error: ${e.message}")
+            LiveTvChannelListResponse()
+        }
+    }
+
+    override suspend fun getLiveTvChannel(channelId: String, countryCode: String): BffLiveTvChannel? = withContext(Dispatchers.IO) {
+        try {
+            val params = mutableMapOf("channelId" to channelId)
+            if (countryCode.isNotBlank()) params["countryCode"] = countryCode
+            val json = executeSignedRequest(
+                method = "GET",
+                endpoint = "/wefeed-mobile-bff/live/tv-channel",
+                queryParams = params
+            )
+            val dataObj = json.optJSONObject("data") ?: return@withContext null
+            val adapter = moshi.adapter(BffLiveTvChannel::class.java)
+            adapter.fromJson(dataObj.toString())
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            android.util.Log.w(TAG, "getLiveTvChannel error: ${e.message}")
+            null
+        }
+    }
 }

@@ -14,6 +14,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.PlayCircleOutline
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -47,6 +48,7 @@ fun HomeScreen(
     onDeleteHistoryClick: (String) -> Unit,
     onRetry: () -> Unit,
     onSearchClick: () -> Unit = {},
+    onSettingsClick: () -> Unit = {},
     onSeeAllClick: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
@@ -289,20 +291,42 @@ fun HomeScreen(
                 }
             }
 
-            // Top right search action
-            IconButton(
-                onClick = onSearchClick,
-                modifier = Modifier
-                    .size(38.dp)
-                    .clip(CircleShape)
-                    .background(Color.Black.copy(alpha = 0.35f)) // legibility-ok: search icon circle
+            // Top right actions: Search and Settings (positioned to the right of search icon, copying visual properties)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Default.Search,
-                    contentDescription = "Search",
-                    tint = Color.White, // legibility-ok: search icon tint
-                    modifier = Modifier.size(20.dp)
-                )
+                IconButton(
+                    onClick = onSearchClick,
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.35f)) // legibility-ok: search icon circle
+                        .testTag("home_search_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Search,
+                        contentDescription = "Search",
+                        tint = Color.White, // legibility-ok: search icon tint
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+
+                IconButton(
+                    onClick = onSettingsClick,
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.35f)) // legibility-ok: settings icon circle
+                        .testTag("home_settings_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Settings,
+                        contentDescription = "Settings",
+                        tint = Color.White, // legibility-ok: settings icon tint
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
             }
         }
     }

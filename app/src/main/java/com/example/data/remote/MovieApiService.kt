@@ -74,6 +74,22 @@ interface MovieApiService {
         @Query("se") season: Int = 1,
         @Query("ep") episode: Int = 1
     ): CaptionsResponse
+
+    @GET("api/live/countries")
+    suspend fun getLiveTvCountries(): LiveTvCountryListResponse = LiveTvCountryListResponse()
+
+    @GET("api/live/channels")
+    suspend fun getLiveTvChannels(
+        @Query("countryCode") countryCode: String,
+        @Query("page") page: Int = 1,
+        @Query("perPage") perPage: Int = 50
+    ): LiveTvChannelListResponse = LiveTvChannelListResponse()
+
+    @GET("api/live/channel")
+    suspend fun getLiveTvChannel(
+        @Query("channelId") channelId: String,
+        @Query("countryCode") countryCode: String = ""
+    ): BffLiveTvChannel? = null
 }
 
 object NetworkClient {

@@ -1,18 +1,11 @@
 package com.example.data.remote
 
+import com.example.data.model.LiveTvChannel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.ConcurrentHashMap
-
-data class LiveTvChannel(
-    val id: String,
-    val name: String,
-    val category: String,
-    val logo: String? = null,
-    val streamUrl: String
-)
 
 /**
  * Service that fetches AnyFilm's working Live TV resources:

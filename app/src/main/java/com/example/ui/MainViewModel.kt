@@ -49,8 +49,9 @@ private const val REFERER_HEADER = "https://moviebox.ph/"
 enum class AppTab {
     HOME,
     CATALOG,
-    SEARCH,
-    LIBRARY
+    LIVE_TV,
+    LIBRARY,
+    SEARCH
 }
 
 enum class CatalogType(val label: String) {
@@ -101,6 +102,24 @@ data class SearchUiState(
     val effectiveSourceIndicator: ContentSourceIndicator
         get() = if (sourceIndicator != ContentSourceIndicator.NONE) sourceIndicator
                 else computeSourceIndicator(results)
+}
+
+data class LiveTvUiState(
+    val countries: List<LiveTvCountry> = emptyList(),
+    val selectedCountryCode: String = "IN",
+    val channels: List<LiveTvChannel> = emptyList(),
+    val searchQuery: String = "",
+    val isLoading: Boolean = false,
+    val selectedChannel: LiveTvChannel? = null,
+    val isPlayingLive: Boolean = false,
+    val error: String? = null
+) {
+    val filteredChannels: List<LiveTvChannel>
+        get() = if (searchQuery.isBlank()) channels
+        else channels.filter {
+            it.title.contains(searchQuery, ignoreCase = true) ||
+            it.languageCodes.any { lang -> lang.contains(searchQuery, ignoreCase = true) }
+        }
 }
 
 data class DetailPlayerUiState(
@@ -254,6 +273,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val searchState: StateFlow<SearchUiState> = _searchState.asStateFlow()
     private var searchJob: Job? = null
     private var catalogJob: Job? = null
+
+    // Live TV state
+    private val _liveTvState = MutableStateFlow(LiveTvUiState())
+    val liveTvState: StateFlow<LiveTvUiState> = _liveTvState.asStateFlow()
+    private var liveTvJob: Job? = null
     private var catalogJobIsReset = false
 
     // Detail & Player state
@@ -361,6 +385,48 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectTab(tab: AppTab) {
         _currentTab.value = tab
+        if (tab == AppTab.LIVE_TV && _liveTvState.value.countries.isEmpty()) {
+            loadLiveTvCountries()
+        }
+    }
+
+    fun loadLiveTvCountries() {
+        viewModelScope.launch {
+            _liveTvState.update { it.copy(isLoading = true, error = null) }
+            val countries = repository.getLiveTvCountries()
+            val currentSelected = _liveTvState.value.selectedCountryCode
+            val defaultCountry = if (countries.any { it.countryCode.equals(currentSelected, ignoreCase = true) }) currentSelected
+                                else if (countries.any { it.countryCode.equals("IN", ignoreCase = true) }) "IN"
+                                else countries.firstOrNull()?.countryCode ?: "IN"
+            _liveTvState.update { it.copy(countries = countries, selectedCountryCode = defaultCountry) }
+            loadLiveTvChannels(defaultCountry)
+        }
+    }
+
+    fun selectLiveTvCountry(countryCode: String) {
+        _liveTvState.update { it.copy(selectedCountryCode = countryCode, searchQuery = "") }
+        loadLiveTvChannels(countryCode)
+    }
+
+    fun setLiveTvSearchQuery(query: String) {
+        _liveTvState.update { it.copy(searchQuery = query) }
+    }
+
+    fun loadLiveTvChannels(countryCode: String) {
+        liveTvJob?.cancel()
+        liveTvJob = viewModelScope.launch {
+            _liveTvState.update { it.copy(isLoading = true, error = null) }
+            val channels = repository.getLiveTvChannels(countryCode)
+            _liveTvState.update { it.copy(channels = channels, isLoading = false) }
+        }
+    }
+
+    fun playLiveTvChannel(channel: LiveTvChannel) {
+        _liveTvState.update { it.copy(selectedChannel = channel, isPlayingLive = true) }
+    }
+
+    fun closeLiveTvPlayer() {
+        _liveTvState.update { it.copy(selectedChannel = null, isPlayingLive = false) }
     }
 
     private fun filterHomeItems(items: List<MovieItem>, allowAdult: Boolean): List<MovieItem> {
